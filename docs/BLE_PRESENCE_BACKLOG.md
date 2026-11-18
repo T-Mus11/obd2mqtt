@@ -73,11 +73,11 @@
 
 ### US-13 [P1] — Kontrolowane ponawianie
 **Jako** właściciel auta **chcę** ograniczonych prób po niepowodzeniu **aby** nie tracić krótkiego okna aktywnego ECU.
-**Akceptacja:** limit prób, odstępów i całego okna; następna próba dopiero po zakończeniu poprzedniej; sukces kończy serię; kolejna reklama nie uruchamia równoległej serii; jawny wynik i przyczyna błędu w HA; zachowanie przy utracie BLE/Wi-Fi/MQTT określone.
+**Akceptacja:** po kwalifikującym przejściu BLE rozpoczyna się opcjonalne okno wykrywania gotowości ECU trwające maksymalnie 10 minut; pierwsza próba niezwłocznie, kolejne nominalnie co 30 sekund **od rozpoczęcia poprzedniej próby** (nie częściej), przy czym nowe żądanie następuje dopiero po zakończeniu poprzedniego; do 20 prób w 10-minutowym oknie (pierwsza w t=0, ostatnia najpóźniej w t=570 s); sukces = poprawna odpowiedź na skonfigurowany, wspierany PID potwierdzająca aktywność ECU, nie samo BLE, `ATRV` ani odpowiedź `NO DATA`; sukces natychmiast kończy serię i może uruchomić jeden pełny odczyt profilu; po 10 minutach lub po limicie prób seria kończy się statusem timeout; kolejne reklamy nie uruchamiają równoległej serii; nie ma bezterminowego retry; status, numer próby i przyczyna błędu w HA; zachowanie przy utracie BLE/Wi-Fi/MQTT jawne. Odstęp 30 s i okno 10 min są początkowymi wymaganiami do walidacji pomiarem wpływu na uśpienie adaptera i akumulator.
 
 ### US-14 [P0, bramka bezpieczeństwa dla US-12] — Ochrona akumulatora
 **Jako** właściciel auta **chcę** minimalnego wpływu na akumulator **aby** Vgate mógł pozostać w gnieździe na postoju.
-**Akceptacja:** samo monitorowanie nie łączy się z ELM; po serii rozłącza BLE; limity i cooldown zapobiegają ciągłym pobudkom; restart nie uruchamia automatycznego poll; fabryczne ograniczenia napięcia nie są bez uzasadnienia wyłączane; odczyt `ATRV` traktowany ostrożnie (wcześniejsze zaniżenie ~0,9 V wymaga weryfikacji); wykonany test postoju.
+**Akceptacja:** samo pasywne monitorowanie nie łączy się z ELM; wyłącznie w aktywowanym, ograniczonym oknie do 10 min możliwe są próby PID co 30 s; między próbami połączenie BLE jest zamykane, o ile pozwala na to zakończenie sesji; po serii adapter pozostaje rozłączony; limity i cooldown zapobiegają ciągłym pobudkom; restart nie uruchamia automatycznego poll; fabryczne ograniczenia napięcia nie są bez uzasadnienia wyłączane; `ATRV` traktowany ostrożnie (wcześniejsze zaniżenie ~0,9 V wymaga weryfikacji); test postoju z otwarciem drzwi, bez włączenia zapłonu przez 10 min, obejmuje obserwację skutków częstych prób. Wynik testu może wymusić dłuższe odstępy lub niższy limit prób przed dopuszczeniem funkcji.
 
 ## Epic F — Panel użytkownika
 
@@ -97,7 +97,7 @@
 
 ### US-18 [P0] — Testy terenowe i reprodukowalność
 **Jako** administrator **chcę** udokumentowanych scenariuszy testowych **aby** odróżnić uśpienie Vgate od wyjazdu.
-**Akceptacja:** badanie zaparkowanego auta z wyłączonym zapłonem, zaśnięcia/wybudzenia Vgate **w tym po otwarciu drzwi bez kluczyka**, faktycznego wyjazdu/powrotu, innych tagów, reboot ESP32, utraty Wi-Fi/MQTT i dłuższej sesji OBD; zapis obserwacji RSSI i czasu, bez wyciągania pewnych wniosków o fizycznym ruchu; wyniki i nierozstrzygnięte hipotezy udokumentowane.
+**Akceptacja:** badanie zaparkowanego auta z wyłączonym zapłonem, zaśnięcia/wybudzenia Vgate **w tym po otwarciu drzwi bez kluczyka**, faktycznego wyjazdu/powrotu, innych tagów, reboot ESP32, utraty Wi-Fi/MQTT i dłuższej sesji OBD; scenariusze przekręcenia kluczyka np. po 1/5/9 min od wykrycia BLE oraz pełne 10 min bez zapłonu przy próbach co 30 s; weryfikacja poprawnej odpowiedzi PID i zakończenia serii, porównanie poboru energii i czasu ponownego uśpienia adaptera; zapis RSSI i czasu, bez wniosków o fizycznym ruchu; wyniki i hipotezy udokumentowane.
 
 ## Definition of Done — wspólne
 
@@ -138,9 +138,9 @@ US-14 jest **bramką** dla automatycznych odczytów; US-16/17 są obowiązkowe p
 | Zapłon włączony | Vgate widoczny przez BLE; wcześniej potwierdzono odpowiedzi ECU na PID-y |
 | Około 1 min po wyjęciu kluczyka | Adapter nadal rozgłasza BLE, ECU zwraca `NO DATA` |
 | Około 60 min po wyjęciu kluczyka | Vgate nieobecny w wynikach jednego ręcznego skanu; inne urządzenia były wykrywane |
-| Otwarcie drzwi samochodu, bez wkładania kluczyka i bez włączania zapłonu | Adapter ponownie wykrywalny przez BLE — relacja z testu użytkownika |
+| Otwarcie drzwi samochodu, bez wkładania kluczyka i bez włączania zapłonu | Adapter ponownie wykrywalny przez BLE, ale PID-y zwracają `NO DATA` — test użytkownika |
 
-**Interpretacja i ograniczenia:** wynik jest zgodny z hipotezą automatycznego uśpienia i wybudzenia adaptera przez aktywność elektryczną pojazdu, ale nie mierzy dokładnego czasu uśpienia, poboru prądu ani dostępności ECU **po otwarciu drzwi**. Jednorazowy brak w skanie nie dowodzi trwałego stanu `NOT_IN_RANGE`; musi go potwierdzić algorytm czasu skutecznego skanowania. Wznowienie reklam po otwarciu drzwi nie jest dowodem przyjazdu. Weryfikacja, czy PID-y odpowiadają już w tym momencie, pozostaje otwarta.
+**Interpretacja i ograniczenia:** wynik jest zgodny z hipotezą automatycznego uśpienia i wybudzenia adaptera przez aktywność elektryczną pojazdu, ale nie mierzy dokładnego czasu uśpienia ani poboru prądu; **po otwarciu drzwi nie uzyskano odpowiedzi ECU na PID-y**. Jednorazowy brak w skanie nie dowodzi trwałego stanu `NOT_IN_RANGE`; musi go potwierdzić algorytm czasu skutecznego skanowania. Wznowienie reklam po otwarciu drzwi nie jest dowodem przyjazdu. Potwierdzenie gotowości ECU wymaga ponownego odczytu PID po przekręceniu kluczyka. Dla scenariusza wejścia do auta przed uruchomieniem zapłonu wymagane jest ograniczone czasowo okno prób PID do 10 minut, nominalnie co 30 sekund (US-13), z kontrolą wpływu na akumulator (US-14).
 
 **Konsekwencje dla stories:** US-04/05 — klasyfikacja tylko na podstawie rzeczywistego skanowania; US-11 — bez etykiet arrival/departure; US-12/13/14 — odczyt wyłącznie opcjonalny, ograniczony, brak założenia aktywnego ECU; US-18 — obowiązkowy scenariusz testu otwarcia drzwi bez zapłonu.
 
