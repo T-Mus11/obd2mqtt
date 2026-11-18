@@ -10,7 +10,7 @@
 - Stany: `UNKNOWN`, `IN_RANGE`, `NOT_IN_RANGE`. Nie emitujemy fałszywych `arrival` / `departure`.
 - RSSI i `APPROACHING / RECEDING / STABLE / INSUFFICIENT_DATA` to heurystyki, nie dowody ruchu.
 - Wspólny skaner dla wielu BLE; pasywny odbiór reklam bez otwierania sesji OBD. Urządzenia z rotującym MAC wymagają stabilnego identyfikatora reklamy; nie wszystkie da się śledzić.
-- Przejście `NOT_IN_RANGE → IN_RANGE` może **opcjonalnie** wyzwalać ograniczony odczyt OBD. `UNKNOWN → IN_RANGE` nie uruchamia automatycznej próby.
+- Przejście `NOT_IN_RANGE → IN_RANGE` może **opcjonalnie** wyzwalać ograniczony odczyt OBD. `UNKNOWN → IN_RANGE` nie uruchamia automatycznej próby. Obserwowane wybudzenie Vgate po samym otwarciu drzwi (bez kluczyka/zapłonu) oznacza, że takie przejście **nie potwierdza aktywnego ECU ani przyjazdu**; próby OBD muszą być limitowane.
 - Lokalnie, deterministycznie, fail-safe; brak dodatkowych usług chmurowych. Bez zmian w produkcji, wgrywania firmware i automatycznego merge.
 
 ## Epic A — Rejestr BLE
@@ -69,7 +69,7 @@
 
 ### US-12 [P1] — Odpytywanie po ponownym wykryciu
 **Jako** właściciel auta **chcę** opcjonalnie uruchomić OBD po `NOT_IN_RANGE → IN_RANGE` **aby** zebrać aktualne dane ECU bez ciągłego pollingu.
-**Akceptacja:** opcja domyślnie OFF; powiązanie wybranego BLE z **jednym** właściwym adapterem/profilami wspieranymi przez urządzenie; korzysta z istniejącego mechanizmu poll (nie równoległego ELM); `UNKNOWN → IN_RANGE` nie wyzwala; ręczne Poll now nadal działa; nie mylimy wykrycia adaptera z przyjazdem.
+**Akceptacja:** opcja domyślnie OFF; powiązanie wybranego BLE z **jednym** właściwym adapterem/profilami wspieranymi przez urządzenie; korzysta z istniejącego mechanizmu poll (nie równoległego ELM); `UNKNOWN → IN_RANGE` nie wyzwala; ręczne Poll now nadal działa; nie mylimy wykrycia adaptera z przyjazdem; po samym otwarciu drzwi Vgate może rozgłaszać BLE, choć ECU nadal nie odpowiada — brak odpowiedzi nie jest traktowany jako sukces, a kolejne próby podlegają US-13/US-14.
 
 ### US-13 [P1] — Kontrolowane ponawianie
 **Jako** właściciel auta **chcę** ograniczonych prób po niepowodzeniu **aby** nie tracić krótkiego okna aktywnego ECU.
@@ -97,7 +97,7 @@
 
 ### US-18 [P0] — Testy terenowe i reprodukowalność
 **Jako** administrator **chcę** udokumentowanych scenariuszy testowych **aby** odróżnić uśpienie Vgate od wyjazdu.
-**Akceptacja:** badanie zaparkowanego auta z wyłączonym zapłonem, zaśnięcia/wybudzenia Vgate, faktycznego wyjazdu/powrotu, innych tagów, reboot ESP32, utraty Wi-Fi/MQTT i dłuższej sesji OBD; zapis obserwacji RSSI i czasu, bez wyciągania pewnych wniosków o fizycznym ruchu; wyniki i nierozstrzygnięte hipotezy udokumentowane.
+**Akceptacja:** badanie zaparkowanego auta z wyłączonym zapłonem, zaśnięcia/wybudzenia Vgate **w tym po otwarciu drzwi bez kluczyka**, faktycznego wyjazdu/powrotu, innych tagów, reboot ESP32, utraty Wi-Fi/MQTT i dłuższej sesji OBD; zapis obserwacji RSSI i czasu, bez wyciągania pewnych wniosków o fizycznym ruchu; wyniki i nierozstrzygnięte hipotezy udokumentowane.
 
 ## Definition of Done — wspólne
 
@@ -128,6 +128,21 @@ Dla **samych stories dokumentacyjnych** DoD: spójne i testowalne kryteria, prze
 | M4 Rozszerzenia | US-03,15 | Identyfikacja tagów i panel |
 
 US-14 jest **bramką** dla automatycznych odczytów; US-16/17 są obowiązkowe przy każdym etapie implementacji.
+
+## Obserwacje terenowe — Nissan Qashqai / Vgate iCar Pro BLE (2026-11-18)
+
+**Konfiguracja testu:** Nissan Qashqai J10, adapter Vgate iCar Pro BLE (nazwa `IOS-Vlink`, MAC `D2:E0:2F:8D:52:48`), ESP32 OBD2MQTT v0.3.24; ręczne „Scan for dongles”. `Polling: OFF`.
+
+| Okoliczność | Wynik zaobserwowany |
+|---|---|
+| Zapłon włączony | Vgate widoczny przez BLE; wcześniej potwierdzono odpowiedzi ECU na PID-y |
+| Około 1 min po wyjęciu kluczyka | Adapter nadal rozgłasza BLE, ECU zwraca `NO DATA` |
+| Około 60 min po wyjęciu kluczyka | Vgate nieobecny w wynikach jednego ręcznego skanu; inne urządzenia były wykrywane |
+| Otwarcie drzwi samochodu, bez wkładania kluczyka i bez włączania zapłonu | Adapter ponownie wykrywalny przez BLE — relacja z testu użytkownika |
+
+**Interpretacja i ograniczenia:** wynik jest zgodny z hipotezą automatycznego uśpienia i wybudzenia adaptera przez aktywność elektryczną pojazdu, ale nie mierzy dokładnego czasu uśpienia, poboru prądu ani dostępności ECU **po otwarciu drzwi**. Jednorazowy brak w skanie nie dowodzi trwałego stanu `NOT_IN_RANGE`; musi go potwierdzić algorytm czasu skutecznego skanowania. Wznowienie reklam po otwarciu drzwi nie jest dowodem przyjazdu. Weryfikacja, czy PID-y odpowiadają już w tym momencie, pozostaje otwarta.
+
+**Konsekwencje dla stories:** US-04/05 — klasyfikacja tylko na podstawie rzeczywistego skanowania; US-11 — bez etykiet arrival/departure; US-12/13/14 — odczyt wyłącznie opcjonalny, ograniczony, brak założenia aktywnego ECU; US-18 — obowiązkowy scenariusz testu otwarcia drzwi bez zapłonu.
 
 ## Decyzje otwarte (nie rozstrzygać przed pomiarami)
 
