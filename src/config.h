@@ -82,6 +82,7 @@ extern bool g_ipFallback;          // feste IP fehlgeschlagen → DHCP aktiv (ma
 extern Profile profile;
 
 bool fsBegin();
+bool fsMounted();  // true only when existing LittleFS successfully mounted; never auto-formats
 bool loadConfig();
 bool saveConfig();
 void migrateProfiles();              // gespeicherte Profile reparieren (z. B. fehlendes ATFCSD)
