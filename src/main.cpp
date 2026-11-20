@@ -180,7 +180,7 @@ void setup() {
   if (!fsOk) logf("LittleFS mount failed: flash left untouched; BLE polling disabled, recovery AP available");
   Watchdog::begin();
   logBootCheck(Watchdog::crashCount());
-  if (fsOk) migrateProfiles();   // only modify profiles when the existing filesystem mounted
+  if (fsOk && cfgOk) migrateProfiles();  // never change saved profiles without a valid config
   if (!cfgOk) logf("%s", T("Keine Konfiguration – Standardwerte", "No configuration – using defaults"));
   logSetPersist(cfg.logPersist);
   configTzTime(cfg.tz.c_str(), cfg.ntpServer.c_str(), "time.cloudflare.com");
@@ -189,7 +189,7 @@ void setup() {
   if (MDNS.begin(cfg.hostname.c_str())) MDNS.addService("http", "tcp", 80);
 
   MqttHa::begin();
-  Poller::begin(fsOk && !Watchdog::safeMode());
+  Poller::begin(fsOk && cfgOk && !Watchdog::safeMode());
   Web::begin();
   Watchdog::armTaskWdt();
 }
