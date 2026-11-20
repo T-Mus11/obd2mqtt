@@ -18,6 +18,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Compile and run portable BLE state-machine tests
         run: |
           g++ -std=c++11 -Wall -Wextra -Werror -Isrc test/native/ble_presence_state_test.cpp -o /tmp/ble_presence_state_test
@@ -84,6 +86,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -97,12 +101,12 @@ jobs:
         run: |
           test -s firmware/obd2mqtt-v0.3.24-m1-test-esp32dev-ota.bin
           sha256sum firmware/obd2mqtt-v0.3.24-m1-test-esp32dev-ota.bin > firmware/SHA256SUMS-m1.txt
-          printf '%s\n' "Source: T-Mus11/obd2mqtt@${{ github.sha }}" "Board: esp32dev / ESP32-WROOM-32D" "Firmware version: 0.3.24-m1-test" "OTA application only; not a factory or full flash image" "Manual test: no automatic upload, no merge" > firmware/M1-SOURCE.txt
+          printf '%s\n' "Source: T-Mus11/obd2mqtt@${{ github.event.pull_request.head.sha || github.sha }}" "Board: esp32dev / ESP32-WROOM-32D" "Firmware version: 0.3.24-m1-test" "OTA application only; not a factory or full flash image" "Manual test: no automatic upload, no merge" > firmware/M1-SOURCE.txt
       - name: Archive ESP32-WROOM OTA image (manual test only)
         if: matrix.environment == 'esp32dev'
         uses: actions/upload-artifact@v4
         with:
-          name: obd2mqtt-esp32dev-ota-${{ github.sha }}
+          name: obd2mqtt-esp32dev-ota-${{ github.event.pull_request.head.sha || github.sha }}
           path: |
             firmware/obd2mqtt-v0.3.24-m1-test-esp32dev-ota.bin
             firmware/SHA256SUMS-m1.txt
