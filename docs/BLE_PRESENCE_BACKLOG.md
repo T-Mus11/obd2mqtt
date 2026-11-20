@@ -1,6 +1,6 @@
 # BLE Presence + OBD2MQTT — backlog produktu i Definition of Done
 
-**Status:** Draft v0.3 — refinement MVP (Vgate BLE jako jedyny automatyczny trigger, wykonanie i arbitraż ESP32); **aktualizacja:** 2026-11-20  
+**Status:** Draft v0.4 — BLE Presence jako ogólny lokalny sensor zdarzeń HA + niezależny MVP OBD2; **aktualizacja:** 2026-11-20  
 **Repo:** `T-Mus11/obd2mqtt`; **baza:** `main` @ `f830e845c3bb8db1926860fb2d2448cf3e316a82` (v0.3.24).  
 **Cel:** wersjonowany backlog wymagań. Projekt klas, API, podział modułów i implementacja — **po** zatwierdzeniu stories.
 
@@ -63,7 +63,7 @@
 
 ### US-01 [P0] — Wiele monitorowanych urządzeń
 **Jako** administrator **chcę** dodawać, edytować, wyłączać i usuwać wiele urządzeń BLE **aby** monitorować samochody i tagi jednym ESP32.
-**Akceptacja:** stabilny ID, nazwa, metoda identyfikacji i flaga enabled; adapter OBD może dodatkowo wskazać indywidualny profil/parametry ELM, a tag nie wymaga profilu; walidacja duplikatów; trwałość po restarcie; usuwanie nie narusza innych konfiguracji; limit liczby urządzeń ustalony na podstawie pomiarów RAM/CPU.
+**Akceptacja:** stabilny ID, nazwa, metoda identyfikacji, flaga enabled i rola (`obd_adapter`/`presence_tag`); adapter OBD może dodatkowo wskazać profil ELM, tag nie wymaga profilu; walidacja duplikatów; trwałość po restarcie; usuwanie nie narusza innych konfiguracji. Rejestr nie jest ograniczony koncepcyjnie do 8 urządzeń M1: wymagania rozbudowy i mierzalnego limitu w US-25.
 
 ### US-02 [P0] — Wyszukiwanie i wybór
 **Jako** administrator **chcę** wyszukiwać reklamy BLE w panelu **aby** dodać urządzenie bez ręcznego wpisywania MAC.
@@ -105,11 +105,38 @@
 
 ### US-10 [P0] — MQTT Discovery
 **Jako** użytkownik HA **chcę** automatycznych encji każdego BLE **aby** korzystać z dashboardów i automatyzacji.
-**Akceptacja:** stabilny `unique_id` per urządzenie, binary_sensor dla `IN_RANGE` i osobny status `UNKNOWN` (np. availability/diagnostic state), RSSI, timestamps i jakość obserwacji; trend może tworzyć HA na podstawie RSSI; brak duplikatów po restarcie, czyszczenie Discovery po usunięciu urządzenia, niedostępność ESP32 ≠ NOT_IN_RANGE; odpowiedzi OBD są przypisane do właściwego adaptera.
+**Akceptacja:** stabilny `unique_id` per urządzenie (w tym tagi niebędące adapterami), binary_sensor dla `IN_RANGE` i osobny status `UNKNOWN` (np. availability/diagnostic state), RSSI, timestamps i jakość obserwacji; trend może tworzyć HA na podstawie RSSI; brak duplikatów po restarcie, czyszczenie Discovery po usunięciu urządzenia, niedostępność ESP32 ≠ NOT_IN_RANGE; odpowiedzi OBD są przypisane do właściwego adaptera. Obecność taga może być źródłem automatyzacji HA niezwiązanej z OBD (US-26).
 
 ### US-11 [P0] — Zdarzenia zmian zasięgu
 **Jako** autor automatyzacji HA **chcę** zdarzeń `NOT_IN_RANGE → IN_RANGE` i odwrotnie **aby** reagować lokalnie.
-**Akceptacja:** identyfikator i czas zdarzenia; nie nazywamy ich arrival/departure; bez generowania pozornego przejścia przy restarcie (`UNKNOWN → IN_RANGE`); brak duplikacji zdarzeń przy ponownym wysłaniu danych MQTT.
+**Akceptacja:** stabilny `device_id`, czas, `from_state`, `to_state`, jakość obserwacji; nie nazywamy ich arrival/departure; bez generowania pozornego przejścia przy restarcie (`UNKNOWN → IN_RANGE`); zdarzenia zmian nietrwałe MQTT (`retain=false`), bieżący stan może być retained/Discovery; brak duplikacji wydarzeń przy reconnect/retransmisji. Emisja dla wszystkich zarejestrowanych tagów niezależnie od roli OBD (US-26).
+
+## Epic J — BLE Presence jako źródło automatyzacji Home Assistant
+
+### US-25 [P1] — Skalowalny rejestr wielu tagów BLE
+**Jako** administrator Home Assistant **chcę** utrzymywać dłuższą listę niezależnie monitorowanych tagów BLE (kluczyki, samochody, przedmioty, inne beacony) **aby** jeden ESP32 mógł udostępniać ich obecność bez osobnego skryptu dla każdego urządzenia.
+
+**Kryteria akceptacji:**
+1. Rejestr obsługuje wiele aktywnych tagów BLE obok adapterów OBD. Limit 8 wpisów z aktualnego projektu PR #2/M1 to **ograniczenie implementacji, nie docelowy wymóg produktu**. Celem kolejnego etapu jest przetestowanie rejestru co najmniej 16 tagów i profilu obciążenia 32 tagów; docelowy bezpieczny limit należy ustalić **po pomiarach RAM, czasu skanowania, stabilności MQTT, Wi-Fi i watchdog**. Jeżeli ESP32 nie spełni celu, należy wykazać rzeczywisty limit zamiast obiecywać nieograniczoną listę.
+2. Każdy wpis ma stabilne ID, czytelną nazwę, rolę `presence_tag` lub `obd_adapter`, identyfikację BLE, `enabled` oraz niezależne encje HA. Edycja, wyłączenie i usunięcie pojedynczego urządzenia nie zmienia innych identyfikatorów.
+3. Pojedynczy skaner i ograniczone bufory — bez osobnego tasku BLE, połączenia ELM, historii próbek czy dynamicznej kolejki dla każdego taga. Większa liczba tagów nie może powodować głodzenia komunikacji z adapterem Vgate.
+4. Różne reklamy urządzenia bez stabilnej tożsamości (np. rotacyjny adres MAC bez wspieranego stałego identyfikatora) nie mogą być przypisywane do cudzych tagów; brak obsługi jest jawnie raportowany.
+5. Rejestr przetrwa restart, ma walidację duplikatów i limitów, a MQTT Discovery usuwa nieaktualne encje. Testy obejmują 8/16/32 urządzenia, różną częstotliwość reklam, duplikaty, brak reklam, skan przerwany przez sesję OBD i zmiany konfiguracji bez wycieku pamięci.
+
+### US-26 [P0] — Zdarzenia obecności tagów jako uniwersalne triggery HA
+**Jako** autor automatyzacji Home Assistant **chcę** otrzymywać stany i powiadomienia o pojawieniu się oraz zniknięciu *dowolnego* monitorowanego taga **aby** używać ich do automatyzacji niezwiązanych z diagnostyką samochodu.
+
+**Przykład akceptacyjny:** gdy tag BLE przy kluczykach Fiata przejdzie wiarygodnie z `NOT_IN_RANGE` do `IN_RANGE`, HA może uruchomić oświetlenie podjazdu i garażu, zależnie od własnych warunków (np. po zachodzie słońca). Żadna z tych automatyzacji nie wywołuje automatycznie OBD2.
+
+**Kryteria akceptacji:**
+1. Dla każdego `enabled` taga ESP publikuje stan `UNKNOWN/IN_RANGE/NOT_IN_RANGE`, `last_seen` i diagnostyczny RSSI oraz osobne zdarzenie o rzeczywistej **zmianie** stanu z `device_id`, `from_state`, `to_state`, timestampem i opcjonalnym krótkim identyfikatorem zdarzenia. MQTT Discovery daje stabilne encje do użycia w automatyzacjach HA bez ręcznej implementacji subskrypcji.
+2. Zdarzenie `NOT_IN_RANGE → IN_RANGE` może wyzwolić inne działania HA: oświetlenie, powiadomienie, tryb domu itp. ESP **nie** ma wiedzy o tych akcjach, nie podejmuje decyzji o oświetleniu i nie wykonuje ich sam.
+3. Debounce/histereza zapobiegają seriom zdarzeń od pojedynczych brakujących reklam. Pauza skanowania z powodu połączenia ELM, utrata Wi-Fi/MQTT, restart ESP lub `UNKNOWN → IN_RANGE` **nie** powinny generować fałszywych zdarzeń typu „powrót” czy zapalenia świateł. HA musi mieć możliwość ustawienia własnych warunków godzinowych i cooldown niezależnie od filtra BLE.
+4. Zdarzenia zmian MQTT mają `retain=false`; retained stan służy do prezentacji stanu, a nie odtwarzania minionych triggerów. Bez duplikacji po reconnect/powtórzonym pakiecie i bez fałszywego „zniknięcia” przy niedostępności ESP. Zdarzenia są *best effort* przy przerwie MQTT; HA powinien używać także aktualnego stanu i jawnie obsługiwać brak łączności.
+5. **Rozdział OBD:** tylko urządzenie oznaczone `obd_adapter` i zatwierdzone do opt-in autopoll może lokalnie wyzwolić OBD. Zdarzenia `presence_tag` nie są przekazywane do wewnętrznego automatycznego triggera OBD i nie resetują jego 600 s, retry ani cooldown; jawna komenda `poll_data` z HA jest osobną ścieżką.
+6. Testy: tag kluczyków + adapter Vgate + tag w samochodzie w zasięgu jednocześnie; tylko jedno wyzwolenie światła po prawidłowym przejściu kluczyków, zero automatycznych sesji OBD od tagów; brak ponownych zdarzeń przy utrzymującym się sygnale; zaniki RSSI, reset ESP, zanik MQTT, nienadzorowany postój i 16+ urządzeń.
+
+**Zakres:** historia, logika otoczenia i automatyzacje oświetlenia są w HA i nie są wdrażane w ramach tej story; BLE jest wyłącznie sygnałem o wykrywalności, nie dowodem fizycznej obecności osoby ani kluczyków.
 
 ## Epic E — OBD jako akcja opcjonalna
 
@@ -204,13 +231,13 @@ Dla **samych stories dokumentacyjnych** DoD: spójne i testowalne kryteria, prze
 | Milestone | Stories | Rezultat |
 |---|---|---|
 | M0 Backlog | Ten dokument | Uzgodnione wymagania i DoD |
-| M1 Presence MVP | US-01,02,04,05,07,10,11,16,17 | Lekki skaner i stany BLE/MQTT, podstawowa telemetria |
+| M1 Presence MVP | US-01,02,04,05,07,10,11,16,17,26 (podstawowe zdarzenia) | Lekki skaner, stan i zdarzenia tagów dostępne automatyzacjom HA, bez logiki świateł w ESP |
 | M2 API wielu adapterów | US-20,21,14,16,17 | `poll_data(adapter_id, metrics)` z lokalną kolejką, deduplikacją i wynikiem do HA |
 | M3 Automatyczny MVP OBD | US-12,13,22,23,24,18 | Vgate BLE uruchamia tylko jedną lokalną ograniczoną sesję, `0131/0101/03/07`, wyniki do HA |
-| M4 Rozszerzenia | US-03,06,08,09,15 | Identyfikacja tagów, trendy i eksport historii w HA, prosty panel konfiguracji |
+| M4 Rozszerzenia BLE | US-03,06,08,09,15,25,26 (skala) | Rozbudowa rejestru tagów ponad M1, obsługa uniwersalnych triggerów HA, trendy i eksport historii |
 | M5 Rozszerzona diagnostyka | US-19 | Interpretacja, Mode 0A/02 i opcjonalne moduły producenta; podstawowe DTC 03/07 są już w M3 |
 
-US-14 jest **bramką** dla automatycznych odczytów; US-16/17 są obowiązkowe przy każdej implementacji. US-20/21/22/23/24 są wymagane dla MVP OBD; US-19 dotyczy wyłącznie późniejszych rozszerzeń interpretacji/diagnostyki.
+US-14 jest **bramką** dla automatycznych odczytów; US-16/17 są obowiązkowe przy każdej implementacji. US-20/21/22/23/24 są wymagane dla MVP OBD; US-26 to niezależna funkcjonalność podstawowego BLE Presence (część zdarzeniowa M1, szersza skala po US-25). US-25 nie jest warunkiem ukończenia M1 z aktualnym limitem 8. US-19 dotyczy wyłącznie późniejszych rozszerzeń interpretacji/diagnostyki.
 
 ## Obserwacje terenowe — Nissan Qashqai / Vgate iCar Pro BLE (2026-11-18)
 
@@ -230,10 +257,10 @@ US-14 jest **bramką** dla automatycznych odczytów; US-16/17 są obowiązkowe p
 ## Decyzje otwarte (nie rozstrzygać przed pomiarami)
 
 - Interwał/okna skanowania i budżet radiowy przy Wi-Fi + NimBLE + ELM.
-- Liczba urządzeń i retencja próbek przy dostępnej pamięci ESP32-WROOM-32D.
+- Docelowy limit rejestru BLE ponad 8 wpisów M1: testy 8/16/32 (US-25), opóźnienie zdarzeń dla tagów, budżet RAM i MQTT Discovery na ESP32-WROOM-32D.
 - Okna potwierdzania, agregacja RSSI, filtr trendu i klasyfikacja danych niewystarczających.
 - Mechanizmy identyfikacji tagów o zmiennych adresach.
-- Format eksportu logów i szczegóły discovery/availability HA.
+- Format eksportu logów, zdarzeń `from_state/to_state`, szczegóły discovery/availability HA oraz zachowanie przy utracie/reconnect MQTT (US-26).
 - Zasady małej kolejki/odrzucania zadań przy wielu adapterach, graniczny wiek wiadomości MQTT, deduplikacja i timeout. Istniejąca v0.3.24 używa jednej konfiguracji BLE/profilu, więc wymaga refaktoryzacji.
 - Weryfikacja parametrów startowych ESP (600/3/5/8/2/180/300 s) na logach, w szczególności okna skanowania NimBLE (M1 obecnie 4 s co 30 s), blokad BLE/ELM, wieloramkowych DTC, czasu ECU, WDT, pamięci i poboru prądu. To wartości do tuningu, nie zweryfikowane nastawy.
 - Analiza po testach uśpienia Vgate: BLE nieobecny może oznaczać sleep, nie oddalenie.
