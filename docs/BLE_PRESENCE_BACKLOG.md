@@ -1,12 +1,39 @@
 # BLE Presence + OBD2MQTT — backlog produktu i Definition of Done
 
-**Status:** Draft v0.2 — refinement architektury HA-centric; **aktualizacja:** 2026-11-20  
+**Status:** Draft v0.3 — refinement MVP (Vgate BLE jako jedyny automatyczny trigger, wykonanie i arbitraż ESP32); **aktualizacja:** 2026-11-20  
 **Repo:** `T-Mus11/obd2mqtt`; **baza:** `main` @ `f830e845c3bb8db1926860fb2d2448cf3e316a82` (v0.3.24).  
 **Cel:** wersjonowany backlog wymagań. Projekt klas, API, podział modułów i implementacja — **po** zatwierdzeniu stories.
 
+## Refinement v0.3 — decyzje MVP z 20.11.2026
+
+**Wiążące ustalenia:** celem jest Fiat Tipo SW 1.4 T-Jet LPG (Valencia), Qashqai (Polska) służy też do testów. Jedynym automatycznym wyzwalaczem diagnostyki jest BLE własnego adaptera Vgate OBD; tagi Xiaomi, kamery, BT Classic i Wi-Fi są sygnałami pomocniczymi i nie wyzwalają odczytu. HA wybiera auto i zakres danych oraz może wysłać jawne `poll_data`; ESP32 odpowiada za lekką lokalną maszynę stanów, retry, deduplikację i pojedynczy dostęp do ELM. Poniższe stories aktualizują wcześniejszy model HA-only v0.2; roboczy PR #2 BLE Presence nie jest wdrożeniem tego refinement.
+
+### US-23 [P0] — Minimalny wynik diagnostyczny po wykryciu Vgate
+**Jako** właściciel Fiata **chcę** po powrocie znać dystans i nowe kody błędów **aby** ocenić przebieg i stan auta bez niepotrzebnej telemetrii.
+**Akceptacja:** komplet MVP to `0131` (km od ostatniego kasowania DTC), `0101` (MIL/liczba DTC emisji), Mode `03` (stored) i `07` (pending). HA oblicza różnicę `0131` tylko między poprawnymi pomiarami, wykrywa reset/spadek lub nasycenie licznika i nie zgaduje dystansu; porównuje rzeczywiste zestawy kodów, nie samą liczbę. Brak komunikacji, `NO DATA`, nieobsługiwany PID, odpowiedź zerowa i poprawne `0 DTC` to różne stany. Po pierwszym poprawnym PID z ECU natychmiast dokańczamy zestaw i ponawiamy tylko brakujące pola; dopiero pełny zestaw lub termin kończy sesję. Żadnego kasowania DTC (Mode 04). Opcjonalne później: Mode 0A/02, ABS/SRS/BCM, napięcie i TPMS.
+
+### US-24 [P0] — Parametry czasowe konfigurowalne z HA i egzekwowane przez ESP
+**Jako** administrator **chcę** zmieniać czasy bez aktualizacji firmware **aby** stroić odczyty po rzeczywistych testach. Proponowane wartości początkowe (niezweryfikowane na sprzęcie):
+
+| Parametr | Start | Znaczenie |
+|---|---:|---|
+| `poll_window_s` | 600 s | Termin całej sesji od pierwszego zaakceptowanego triggera, także oczekiwanie w kolejce |
+| `ble_scan_interval_s` | 3 s | Docelowy interwał kontroli obecności; nie długość okna skanu NimBLE; wymaga testu obciążenia |
+| `retry_interval_s` | 5 s | Odstęp pomiędzy nieudanymi próbami komunikacji |
+| `ble_connect_timeout_s` | 8 s | Timeout pojedynczego zestawienia BLE |
+| `obd_query_timeout_s` | 2 s | Timeout pojedynczej odpowiedzi ECU (do weryfikacji przy wieloramkowych DTC) |
+| `absence_confirm_s` | 180 s | Czas skutecznej nieobecności BLE przed ponownym uzbrojeniem |
+| `cooldown_s` | 300 s | Blokada automatycznej sesji po zakończeniu, niezależna od warunku nieobecności |
+
+**Akceptacja:** parametry konfigurowalne z HA, walidowane przez ESP z twardymi limitami i zapisane na restart; timeouty nie tworzą nieskończonych blokad. W czasie sesji kolejne reklamy Vgate ani zdarzenia pomocnicze nie resetują 600 s. Przy restarcie ESP stan początkowy `UNKNOWN` i brak skutecznych skanów nie mogą udawać nieobecności ani uruchamiać odczytu; nie wznawiać starych komend. Deduplikować aktywne sesje po `adapter_id`, a retransmisje MQTT po `request_id`; pole `reason` nie uczestniczy w deduplikacji. Pamiętać, że wybudzenie Vgate na postoju może wyglądać jak ponowne pojawienie się: nie gwarantujemy dokładnie jednego odczytu na fizyczny przyjazd.
+
+**Testy akceptacyjne:** pięć niemal równoczesnych sygnałów (Vgate, dwa Xiaomi, kamera, Wi-Fi) daje najwyżej jedną automatyczną sesję; drugi `poll_data` z HA dla tego samego adaptera nie dubluje odczytu. Dwa auta: nowe żądanie drugiego otrzymuje możliwość próby bez 600 s czekania na pierwsze nieodpowiadające. Zmierzyć wolny RAM, rozmiar firmware, WDT, obciążenie skanera BLE + Wi-Fi, czas PID/DTC, wpływ na akumulator, zachowanie po zaniku MQTT i błędnych danych.
+
+---
+
 ## Podział odpowiedzialności — reguła nadrzędna
 
-**ESP32 = lekki, lokalny adapter wejścia/wyjścia (BLE/OBD/MQTT); HA = orkiestrator, logika biznesowa i repozytorium historii.** Bez połączenia z HA ESP nie uruchamia własnych automatyzacji czy harmonogramów pojazdów. Minimalne filtrowanie obecności, kolejka poleceń i ochrona sprzętu po stronie ESP są konieczne do rzetelnej telemetrii i bezpieczeństwa.
+**ESP32 = lekki lokalny wykonawca BLE/OBD/MQTT i właściciel kolejki, retry oraz timeoutów; HA = konfiguracja pojazdów i metryk, wywołania ręczne/na żądanie, historia i analiza.** Wyłącznie opt-in detekcja zarejestrowanego adaptera Vgate BLE może autonomicznie rozpocząć na ESP sesję odczytu. Pozostałe harmonogramy i triggery HA nie są potrzebne do automatycznego MVP.
 
 | Odpowiedzialność | ESP32/firmware | Home Assistant |
 |---|---|---|
@@ -14,8 +41,8 @@
 | Stan BLE i jakość obserwacji | Minimalny `UNKNOWN/IN_RANGE/NOT_IN_RANGE`, histereza, `last_seen`, RSSI | Historia, dodatkowe reguły i interpretacja |
 | RSSI i trend ruchu | Próbki/krótkie agregaty; bez klasyfikacji ruchu | Trendy `APPROACHING/RECEDING/STABLE`, wykresy |
 | MQTT Discovery, stany, odpowiedzi | Tak — telemetria i status wykonania komend | Konsumuje encje i zdarzenia |
-| Decyzja o odczycie PID | Tylko na komendę lub ręczne żądanie | Wyzwalanie, okno 10 min, ponowienia co 30 s |
-| `poll_data(adapter_id)` | Wykonanie jednej ograniczonej sesji dla wybranego adaptera/profilu | Wywołanie, korelacja, ponowienia, historia |
+| Decyzja o odczycie PID | Jedyny automatyczny trigger: Vgate BLE po ponownym uzbrojeniu; ponowienia lokalne do 600 s | Konfiguruje auto/profil/metryki, może jawnie zażądać `poll_data` |
+| `poll_data(adapter_id)` | Przyjęcie, deduplikacja, kolejka i wykonanie kompletnego zestawu PID/DTC | Zlecenie na żądanie, korelacja wyniku, historia |
 | Diagnostyka DTC | Odczyt danych surowych na żądanie | Wykrywanie nowych DTC, interpretacja, rekomendacje |
 | Bezpieczeństwo | Limity twarde, timeout, jedna sesja BLE/ELM, cooldown i rozłączanie | Dodatkowe reguły i harmonogramy, ale nie zastępują zabezpieczeń ESP |
 
@@ -25,11 +52,11 @@
 - Stany wykrywalności: `UNKNOWN`, `IN_RANGE`, `NOT_IN_RANGE`; bez zdarzeń nazwanych `arrival` / `departure`. Wznowienie reklam po otwarciu drzwi nie potwierdza zapłonu ani gotowości ECU.
 - Jeden ESP może monitorować wiele adapterów OBD i tagów BLE. Każdy adapter OBD ma stabilne `adapter_id`, własny BLE identyfikator i przypisany profil/konfigurację inicjalizacji; wyniki nie mogą się mieszać.
 - Minimalna histereza po stronie ESP chroni jakość telemetrii. Historia długoterminowa i analiza trendu RSSI należą do HA, nie do firmware.
-- ESP **nie uruchamia automatycznie odczytu** po `NOT_IN_RANGE → IN_RANGE`; jedynie publikuje stan/zdarzenie. HA sam decyduje, czy i kiedy wysłać `poll_data(adapter_id)`.
-- Okno prób 10 min / co 30 s jest regułą automatyzacji **HA**. Jedno wywołanie oznacza jedną próbę na ESP, nie uruchamia autonomicznej serii. ESP wymusza niezależne od HA ograniczenia bezpieczeństwa.
+- ESP w opt-in trybie **automatycznie uruchamia ograniczoną sesję tylko po wykryciu zarejestrowanego Vgate BLE**, po potwierdzonym okresie skutecznej nieobecności i cooldown; inne BLE/tags, kamera, BT Classic i Wi-Fi nie wyzwalają OBD. `UNKNOWN → IN_RANGE` po restarcie nie jest nowym przyjazdem.
+- **ESP** egzekwuje okno prób do 600 s od triggera/żądania, ponawiając łączność i brakujące odczyty według lokalnej konfiguracji. **Nie** ma cyklu `poll_data` co 30 s w HA. Pierwsza poprawna odpowiedź ECU kończy agresywne próby połączenia, lecz nie kończy pobierania metryk i DTC.
 - Adapter może być w zasięgu i nadal zwracać `NO DATA`; to prawidłowy, odrębny rezultat operacji, nie awaria detekcji BLE.
-- Brak komunikacji MQTT/HA nie powoduje samoczynnego odpytywania ECU. Komendy nie mogą być retained; zaległe, zdublowane lub przedawnione polecenia nie mogą uruchamiać sesji po restarcie.
-- Zgodność wstecz: istniejące profile, ręczne `Poll now`, terminal i normalny polling v0.3.24 pozostają dostępne; nowy tryb sterowania z HA jest opt-in. Przed jego aktywacją istniejący autonomiczny polling należy jawnie wyłączyć dla objętych adapterów.
+- Nowa automatyczna sesja Vgate może działać lokalnie według wcześniej zatwierdzonej i zapisanej konfiguracji mimo chwilowej niedostępności HA/MQTT; wyniki wymagają statusu dostarczenia. MQTT nie może uruchamiać przedawnionych, retained lub zduplikowanych poleceń; restart ESP nie może samoczynnie wznowić starej sesji.
+- Zgodność wstecz: profile, ręczne `Poll now`, terminal i dotychczasowy polling v0.3.24 pozostają dostępne; nowy **automatyczny tryb Vgate/HA poll jest opt-in i wzajemnie wyklucza się z legacy autopoll dla tego samego adaptera**. Nie włączać na produkcji bez kontroli regresji.
 - Lokalne działanie, brak zależności od chmury. Bez automatycznego merge, firmware upload czy produkcyjnego wdrożenia.
 
 ## Epic A — Rejestr BLE
@@ -86,17 +113,17 @@
 
 ## Epic E — OBD jako akcja opcjonalna
 
-### US-12 [P1] — Odpytywanie po ponownym wykryciu
-**Jako** autor automatyzacji HA **chcę** móc wywołać `poll_data(adapter_id)` po otrzymaniu stanu BLE **aby** to HA, a nie ESP, decydował o odczycie.
-**Akceptacja:** ESP publikuje przejścia zasięgu, ale nie inicjuje na ich podstawie OBD; HA może wywołać pojedynczą sesję dowolnego skonfigurowanego adaptera poprzez US-20/21; `UNKNOWN → IN_RANGE` nie jest automatycznym triggerem po restarcie; ręczne Poll now pozostaje możliwe; `NO DATA` po otwarciu drzwi to wynik próby, nie potwierdzenie zapłonu; dane i status wracają do HA z `adapter_id` oraz `request_id`.
+### US-12 [P0] — Automatyczna sesja po wykryciu zarejestrowanego Vgate BLE
+**Jako** właściciel pojazdu **chcę** automatycznie rozpocząć pojedynczą sesję diagnostyczną po ponownym wykryciu adaptera Vgate **aby** zdążyć z odczytem przed wyłączeniem zapłonu, bez zależności od innych triggerów.
+**Akceptacja:** tryb opt-in, wyłącznie zarejestrowany adapter OBD i potwierdzone ponowne pojawienie BLE po skutecznej nieobecności wyzwalają lokalną sesję ESP; inne Xiaomi BLE, kamera, BT Classic czy Wi-Fi nie wyzwalają; `UNKNOWN → IN_RANGE` po restarcie nie uruchamia poll; BLE nie dowodzi fizycznego przyjazdu ani gotowości ECU; test uśpienia Vgate i wybudzenia po otwarciu drzwi; status i wynik publikowany do HA.
 
-### US-13 [P1] — Kontrolowane ponawianie
-**Jako** autor automatyzacji HA **chcę** harmonogramować ograniczone próby `poll_data(adapter_id)` **aby** wykryć moment, w którym ECU zaczyna odpowiadać.
-**Akceptacja:** HA zarządza oknem maks. 10 min, próbą początkową oraz nominalnym odstępem 30 s (maks. 20 prób, bez nakładania i nie częściej niż co 30 s); kończy po poprawnej odpowiedzi na wspierany PID, nie po samym BLE, `ATRV` lub `NO DATA`; po sukcesie może zlecić pełny odczyt profilu; timeout, cooldown, przerwanie po utracie stanu i odmowy ESP są jawne. ESP nie zna dziesięciominutowego harmonogramu; wykonuje wyłącznie pojedynczą komendę i odsyła wynik. Wartości 30 s/10 min wymagają walidacji poboru prądu.
+### US-13 [P0] — Lokalna sesja z ograniczonymi retry i zbieraniem brakujących pól
+**Jako** administrator **chcę** aby ESP32 sam ponawiał krótkie próby połączenia i odczytu w jednym ograniczonym oknie **aby** nie stracić krótkiego czasu dostępności ECU i nie obciążać HA.
+**Akceptacja:** ESP32 odlicza maks. 600 s od pierwszego zaakceptowanego triggera/żądania (również czas oczekiwania w kolejce); retry początkowo co 5 s; pierwsza poprawna odpowiedź PID z ECU kończy fazę prób ustanowienia komunikacji, po czym natychmiast następuje wymagany zestaw MVP `0131`, `0101`, `03`, `07`. Ponawia się tylko brakujące pola; komplet kończy wcześniej, timeout kończy częściowym/jawnym wynikiem. Samo BLE, odpowiedź `OK` ELM i `ATRV` nie są sukcesem ECU; `NO DATA` nie oznacza braku błędów. Kolejne reklamy ani triggery nie resetują zegara. Parametry walidowane i strojalne; test wpływu na akumulator.
 
 ### US-14 [P0, bramka bezpieczeństwa dla US-12] — Ochrona akumulatora
 **Jako** właściciel auta **chcę** minimalnego wpływu na akumulator **aby** Vgate mógł pozostać w gnieździe na postoju.
-**Akceptacja:** pasywne skanowanie nie otwiera sesji ELM; ESP wykonuje tylko zaakceptowane komendy HA, z niezależnym twardym limitem czasu operacji, bezpiecznym minimalnym odstępem, ograniczoną kolejką, pojedynczą sesją ELM, przerwaniem/rozłączeniem i ochroną przed zaległymi, retained lub zduplikowanymi poleceniami; po utracie HA/MQTT i restarcie brak samoczynnego odpytywania; dotychczasowy polling automatyczny pozostaje opcją legacy, nie działa równolegle dla urządzeń sterowanych z HA; zabezpieczenia napięcia nie są bez powodu wyłączane, a `ATRV` może zaniżać (~0,9 V zaobserwowane wcześniej); test postoju z drzwiami otwartymi, bez zapłonu przez 10 min przy sterowaniu HA. Wynik testu może wymusić niższe limity.
+**Akceptacja:** w trybie opt-in tylko wykrycie zarejestrowanego Vgate lub jawne polecenie HA uruchamia ograniczoną sesję ELM; brak ciągłego pollingu. Twarde limity, timeouty, cooldown, jednocześnie jedna sesja ELM, ograniczona kolejka, bezpieczne rozłączanie, deduplikacja i niewykonywanie starych poleceń; brak drugiej automatycznej sesji podczas postojowego wybudzenia przed zakończeniem cooldown/absence. Legacy autopoll nie działa równolegle. Test 10 min bez zapłonu, pomiar wpływu na akumulator; `ATRV` nie zastępuje pomiaru multimetrem.
 
 ## Epic F — Panel użytkownika
 
@@ -116,11 +143,11 @@
 
 ### US-18 [P0] — Testy terenowe i reprodukowalność
 **Jako** administrator **chcę** udokumentowanych scenariuszy testowych **aby** odróżnić uśpienie Vgate od wyjazdu.
-**Akceptacja:** zaparkowane auto bez zapłonu, zaśnięcie/wybudzenie po otwarciu drzwi, rzeczywisty wyjazd/powrót, inne tagi, reboot ESP32, utrata Wi-Fi/MQTT i długa sesja OBD; **HA** wywołuje `poll_data` po 1/5/9 min od otwarcia drzwi i przy braku zapłonu przez pełne 10 min, kontroluje odstęp 30 s, limity i zakończenie; ESP zwraca wynik każdej pojedynczej komendy; testy dwóch różnych adapterów/profili oraz pomiar poboru energii/czasu uśpienia; surowe obserwacje RSSI, bez pewnych wniosków o ruchu.
+**Akceptacja:** test zaparkowanego auta bez zapłonu, uśpienia/wybudzenia Vgate po otwarciu drzwi, rzeczywistego wyjazdu/powrotu, 5 niezależnych sygnałów obecności z jednym wyzwalaczem Vgate, resetu ESP, utraty Wi-Fi/MQTT, 10 min bez ECU i krótkiego okna dostępności ECU (ok. 60–90 s — założenie terenowe, nie gwarancja); dwie równoczesne komendy dla tego samego adaptera i dwa różne adaptery; pomiar obciążenia BLE/Wi-Fi i akumulatora, danych surowych i statusów; bez nazywania stanu BLE fizycznym przyjazdem.
 
-## Epic H — Diagnostyka DTC na żądanie (etap późniejszy, poza MVP)
+## Epic H — Rozszerzona interpretacja DTC (poza MVP; surowe kody 03/07 są w MVP)
 
-### US-19 [P2] — Rozpoznawanie nowych błędów pojazdu i rekomendowanie działań
+### US-19 [P2] — Interpretacja i dodatkowe tryby DTC po uzyskaniu kodów MVP
 **Jako** system Home Assistant zarządzający wieloma pojazdami **chcę** wykrywać nowe kody usterek (DTC) przypisane do konkretnego adaptera/pojazdu i móc na żądanie wywołać ich szczegółowy odczyt, interpretację oraz ocenę pilności **aby** przekazać użytkownikowi zrozumiałą informację o problemie i zalecane kolejne działania.
 
 **Kryteria akceptacji:**
@@ -135,7 +162,7 @@
 9. Odczyt podlega globalnym limitom i kolejce sesji OBD (bez równoległego użycia BLE, z timeout, cooldown i ochroną akumulatora). Jeżeli ECU jest nieaktywne, zwracany jest jawny status, bez nieograniczonego ponawiania.
 10. Testy obejmują: brak DTC, jeden i wiele kodów, stored/pending/permanent, nieobsługiwany tryb/freeze frame, brak ECU, zanik BLE i MQTT, dwa pojazdy, powracający kod, nieznany kod producenta i brak źródła interpretacji. Dane testowe są syntetyczne lub odczytowe; bez wywoływania rzeczywistej usterki i bez kasowania kodów.
 
-**Zależności:** rejestr wielu adapterów (US-01), osobne encje/stan HA (US-10), twarde limity wykonawcze (US-14, US-16), API wywołań i wyniku (US-20/21), wieloprofilowość; funkcja po stabilizacji wieloadapterowego MVP. Interpretacja i rekomendacje pozostają wyłącznie w HA, nigdy w ESP.
+**Zależności:** rejestr wielu adapterów (US-01), raporty DTC MVP (US-23), osobne encje/stan HA (US-10), twarde limity wykonawcze (US-14/16), API (US-20/21). Rozszerzona interpretacja, Mode 0A, Mode 02 i moduły ABS/SRS/BCM są po stabilizacji MVP; podstawowe Mode 03/07 NIE są odłożone.
 
 **Poza zakresem:** naprawa pojazdu przez automatyzację, automatyczne kasowanie DTC, pełna diagnostyka producenta, gwarancja dostępności opisów dla każdego kodu oraz obowiązkowe użycie chmurowych modeli do interpretacji.
 
@@ -143,15 +170,15 @@
 
 ### US-20 [P0] — Wybór adaptera i profilu przy każdym odczycie
 **Jako** Home Assistant **chcę** wskazać docelowy `adapter_id` podczas odczytu **aby** obsługiwać dwa lub więcej samochodów jednym ESP32.
-**Akceptacja:** rejestr może powiązać każdy adapter OBD z MAC/identyfikatorem BLE, adresem BLE, profilem JSON i ustawieniami protokołu; jedno żądanie wybiera jeden adapter i jego profil; firmware serializuje sesje i odłącza poprzednią; nie miesza ustawień ELM ani wyników pojazdów; nieznany/wyłączony adapter zwraca jawny błąd; próby równoczesne są odrzucane jako `busy` lub kolejkowane w **małej kolejce ograniczonej**; test na dwóch adapterach i dwóch różnych profilach. Obecna implementacja v0.3.24 jest jednoadapterowa i wymaga refaktoryzacji.
+**Akceptacja:** rejestr łączy `adapter_id` z identyfikatorem BLE, profilem JSON i protokołem; nie miesza danych aut. ESP serializuje pojedynczą sesję BLE/ELM, ma ograniczony stan oczekiwania per adapter bez rozbudowanej dynamicznej kolejki; pierwsze próby nowych aut przed retry, po krótkiej nieudanej próbie radio przechodzi do kolejnego auta, ale trwający poprawny krótki zestaw PID kończy się bez przerywania. Przy przepełnieniu jawny `rejected`; test dwóch aut. Dla MVP sytuacja równoczesnego przyjazdu jest rzadka, ale nie może blokować drugiego auta pełne 600 s.
 
 ### US-21 [P0] — Polecenie `poll_data(adapter_id)` i wynik do HA
-**Jako** Home Assistant **chcę** wysłać przez MQTT żądanie pojedynczego odczytu i otrzymać skorelowany wynik **aby** samodzielnie planować kolejne działania.
-**Akceptacja:** topic polecenia np. `obd2mqtt/command/poll_data` przyjmuje `request_id`, `adapter_id`, opcjonalny rodzaj `probe` (lekki sprawdzian gotowości ECU) lub `full` (profil); topic odpowiedzi zawiera `request_id`, `adapter_id`, jednoznaczny status (`success`, `no_ecu_response`, `adapter_unavailable`, `busy`, `timeout`, `invalid_request`, `rate_limited`), timestamp i dane z tego konkretnego auta; `probe` potwierdza odpowiedź prawidłowego PID, `full` zwraca dane ze zdefiniowanego profilu. Nie używamy retained dla komend; deduplikacja `request_id`, graniczny wiek żądania i bezpieczna obsługa restartu. Endpoint MQTT nie powinien umożliwiać dowolnych nieautoryzowanych komend ELM ani kasowania DTC; dostęp przez uprawnienia brokera, topic i konfigurację urządzenia. Dla HA udostępniamy wywoływalny skrypt/integrację mapującą komendę i odpowiedź, nie obiecujemy natywnej funkcji C++ w HA.
+**Jako** Home Assistant **chcę** zlecić pojedynczą *kompletną ograniczoną sesję* dla `adapter_id` i wybranych metryk (również ręcznie) **aby** otrzymać wynik bez programowania retry w HA.
+**Akceptacja:** topic np. `obd2mqtt/command/poll_data`: `request_id`, `adapter_id`, `metrics` (np. `mvp`), opcjonalny timeout i jawne `force` do ręcznego obejścia cooldown, nigdy limitów bezpieczeństwa. `reason` nie jest wymagany ani używany do deduplikacji. Potwierdzenie `accepted/already_running/queued/rejected` i wynik `success/partial/timeout/no_ecu_response/...` z `request_id`, `adapter_id`, timestampami i osobnymi statusami metryk. Deduplikacja retransmisji `request_id` i współdzielenie aktywnej sesji po `adapter_id`; różne zestawy metryk wymagają jawnej reguły (uzupełnienie albo odmowa), nie milczącego pominięcia. Komendy `retain=false`, limit wieku, bezpieczny restart; uprawnienia MQTT, brak nieautoryzowanych arbitralnych komend AT/Mode 04. HA może obsługiwać to skryptem/usługą, nie wymaga integracji chmurowej.
 
-### US-22 [P0] — Orkiestracja odczytu w HA
-**Jako** administrator HA **chcę** definiować automatyzację: `IN_RANGE` adaptera → serie żądań `poll_data(adapter_id)` **aby** mieć logikę prób i historii poza ESP.
-**Akceptacja:** HA wyzwala żądania według własnych warunków, domyślnie po potwierdzonym `NOT_IN_RANGE → IN_RANGE` (nie po `UNKNOWN` przy starcie), najwyżej co 30 s przez 10 min; maks. 20 prób i brak nachodzenia; kończy na poprawnym `probe`, może wtedy wykonać jeden `full`; brak odpowiedzi, reconnect, uśpienie Vgate i restart HA mają jawny wynik; HA rejestruje osobną historię prób i danych dla obu aut; urządzenie ESP pozostaje wykonawcą pojedynczego polecenia bez autonomicznego 10-minutowego schedulera.
+### US-22 [P0] — Konfiguracja wyzwalania i parametrów z HA
+**Jako** administrator HA **chcę** ustawiać z HA zakres odczytu i strojalne czasy przy autonomicznym wykonaniu ESP **aby** nie wprowadzać każdego tuningu przez kompilację firmware.
+**Akceptacja:** HA może skonfigurować profil/metryki i parametry US-24 oraz uruchomić jawne `poll_data`; automatyczny trigger to tylko Vgate BLE rozpoznany przez ESP. Nie ma HA-loop 30 s × 20; ESP jest właścicielem czasu, deduplikacji i kolejki; konfiguracja przetrwa restart, aktywne stare polecenia nie są wznawiane. HA archiwizuje wyniki, daty, korelacje, sukces/partial/no ECU i porównuje poprzednie poprawne odczyty.
 
 ## Definition of Done — wspólne
 
@@ -164,7 +191,7 @@ Story jest DONE, jeśli **wszystkie mające zastosowanie** punkty są spełnione
 - [ ] Zweryfikowano zachowanie przy restartach, błędach komunikacji i `millis()` wraparound.
 - [ ] Zmierzono RAM/CPU, stabilność Wi-Fi/BLE, watchdog i obciążenie flash/MQTT.
 - [ ] MQTT Discovery ma stabilne identyfikatory, poprawną dostępność, brak sierot/duplikatów; wynik komendy zachowuje `adapter_id` i `request_id`, a telemetria pojazdów nie miesza się.
-- [ ] OBD jest bezpiecznie ograniczone po stronie ESP: brak równoległych połączeń, twarde limity, cooldown, brak wykonania zaległych komend; HA steruje harmonogramem prób; test wpływu na akumulator.
+- [ ] OBD jest bezpiecznie ograniczone na ESP: jedna sesja, twarde limity, cooldown, brak wykonania zaległych poleceń; lokalne retry i arbitraż; HA konfiguruje parametry i historię; test wpływu na akumulator.
 - [ ] Zaktualizowano dokumentację użytkownika, kontrakt MQTT/HA, diagnozę, ograniczenia oraz procedurę aktualizacji i rollback.
 - [ ] Testy obejmują dwa adaptery o różnych profilach, BLE tag, zerwanie MQTT, restart HA/ESP, zduplikowane/przedawnione komendy i brak ECU.
 - [ ] PR podaje pliki, commit, rzeczywiste testy, wyniki, ryzyka i braki.
@@ -178,12 +205,12 @@ Dla **samych stories dokumentacyjnych** DoD: spójne i testowalne kryteria, prze
 |---|---|---|
 | M0 Backlog | Ten dokument | Uzgodnione wymagania i DoD |
 | M1 Presence MVP | US-01,02,04,05,07,10,11,16,17 | Lekki skaner i stany BLE/MQTT, podstawowa telemetria |
-| M2 API wielu adapterów | US-20,21,14,16,17 | Jedna ograniczona sesja `poll_data(adapter_id)`, wynik do HA |
-| M3 Automatyzacje HA | US-12,13,22,18 | Próby co 30 s przez 10 min i historia po stronie HA |
+| M2 API wielu adapterów | US-20,21,14,16,17 | `poll_data(adapter_id, metrics)` z lokalną kolejką, deduplikacją i wynikiem do HA |
+| M3 Automatyczny MVP OBD | US-12,13,22,23,24,18 | Vgate BLE uruchamia tylko jedną lokalną ograniczoną sesję, `0131/0101/03/07`, wyniki do HA |
 | M4 Rozszerzenia | US-03,06,08,09,15 | Identyfikacja tagów, trendy i eksport historii w HA, prosty panel konfiguracji |
-| M5 Diagnostyka DTC | US-19 | ESP odczytuje DTC na żądanie, HA wykrywa nowości, interpretuje i rekomenduje, bez kasowania |
+| M5 Rozszerzona diagnostyka | US-19 | Interpretacja, Mode 0A/02 i opcjonalne moduły producenta; podstawowe DTC 03/07 są już w M3 |
 
-US-14 jest **bramką** dla automatycznych odczytów; US-16/17 są obowiązkowe przy każdym etapie implementacji. US-20/21/22 są obowiązkowe dla wieloadapterowego MVP sterowanego z HA. US-19 pozostaje poza MVP.
+US-14 jest **bramką** dla automatycznych odczytów; US-16/17 są obowiązkowe przy każdej implementacji. US-20/21/22/23/24 są wymagane dla MVP OBD; US-19 dotyczy wyłącznie późniejszych rozszerzeń interpretacji/diagnostyki.
 
 ## Obserwacje terenowe — Nissan Qashqai / Vgate iCar Pro BLE (2026-11-18)
 
@@ -196,9 +223,9 @@ US-14 jest **bramką** dla automatycznych odczytów; US-16/17 są obowiązkowe p
 | Około 60 min po wyjęciu kluczyka | Vgate nieobecny w wynikach jednego ręcznego skanu; inne urządzenia były wykrywane |
 | Otwarcie drzwi samochodu, bez wkładania kluczyka i bez włączania zapłonu | Adapter ponownie wykrywalny przez BLE, ale PID-y zwracają `NO DATA` — test użytkownika |
 
-**Interpretacja i ograniczenia:** wynik jest zgodny z hipotezą automatycznego uśpienia i wybudzenia adaptera przez aktywność elektryczną pojazdu, ale nie mierzy dokładnego czasu uśpienia ani poboru prądu; **po otwarciu drzwi nie uzyskano odpowiedzi ECU na PID-y**. Jednorazowy brak w skanie nie dowodzi trwałego stanu `NOT_IN_RANGE`; musi go potwierdzić algorytm czasu skutecznego skanowania. Wznowienie reklam po otwarciu drzwi nie jest dowodem przyjazdu. Potwierdzenie gotowości ECU wymaga ponownego odczytu PID po przekręceniu kluczyka. Dla scenariusza wejścia do auta przed uruchomieniem zapłonu **HA**, nie ESP, ma zlecać pojedyncze próby PID przez maks. 10 minut, nominalnie co 30 sekund (US-13/22), z kontrolą wpływu na akumulator (US-14).
+**Interpretacja i ograniczenia:** zaobserwowano uśpienie i wybudzenie Vgate; pojedynczy brak reklamy nie dowodzi wyjazdu, ponowne reklamy po otwarciu drzwi nie dowodzą gotowości ECU. Poprzednie próby HA co 30 s/10 min były **historyczną koncepcją v0.2** i zostały zastąpione w refinement v0.3 lokalnym retry w ESP; testy faktycznego zachowania ECU oraz poboru prądu pozostają wymagane.
 
-**Konsekwencje dla stories:** US-04/05 — klasyfikacja tylko z rzeczywistego skanowania; US-11 — bez etykiet arrival/departure; US-12/13/22 — HA wyzwala i powtarza komendy, ESP wykonuje pojedynczą próbę; US-14 — sprzętowe zabezpieczenia ESP niezależne od HA; US-18 — test otwarcia drzwi bez zapłonu.
+**Konsekwencje dla stories:** US-04/05/11 zachowują trójstanowe BLE bez etykiet arrival/departure; US-12/13/22 w v0.3 przewidują opt-in trigger Vgate i lokalne retry ESP, a nie pętlę HA; US-14/18 obejmują bezpieczne limity i testy postoju.
 
 ## Decyzje otwarte (nie rozstrzygać przed pomiarami)
 
@@ -208,7 +235,7 @@ US-14 jest **bramką** dla automatycznych odczytów; US-16/17 są obowiązkowe p
 - Mechanizmy identyfikacji tagów o zmiennych adresach.
 - Format eksportu logów i szczegóły discovery/availability HA.
 - Zasady małej kolejki/odrzucania zadań przy wielu adapterach, graniczny wiek wiadomości MQTT, deduplikacja i timeout. Istniejąca v0.3.24 używa jednej konfiguracji BLE/profilu, więc wymaga refaktoryzacji.
-- Harmonogram HA 30 s / 10 min / 20 prób oraz twarde limity ESP: dokładne wartości po pomiarach wpływu na Vgate i akumulator; walidacja napięcia Vgate względem multimetru.
+- Weryfikacja parametrów startowych ESP (600/3/5/8/2/180/300 s) na logach, w szczególności okna skanowania NimBLE (M1 obecnie 4 s co 30 s), blokad BLE/ELM, wieloramkowych DTC, czasu ECU, WDT, pamięci i poboru prądu. To wartości do tuningu, nie zweryfikowane nastawy.
 - Analiza po testach uśpienia Vgate: BLE nieobecny może oznaczać sleep, nie oddalenie.
 - US-19 (późniejszy etap): zakres Mode 03/07/0A i Mode 02 dla konkretnych ECU, format surowych ramek, źródła opisów DTC, reguły ocen pilności, polityka lokalnego/ewentualnie zewnętrznego wyjaśniania usterek oraz kontrakt `read_dtc(adapter_id)`.
 
