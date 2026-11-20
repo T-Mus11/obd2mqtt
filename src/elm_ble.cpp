@@ -183,6 +183,7 @@ static bool resolveCharacteristics(String& err) {
 
 bool connect(String& err) {
   if (connected()) return true;
+  stopPresenceScan();  // ELM connection takes priority over passive scans
   if (cfg.bleMac.length() != 17) { err = T("Keine gültige BLE-MAC konfiguriert", "No valid BLE MAC configured"); return false; }
   disconnect();
 
@@ -325,16 +326,21 @@ class ScanCb : public NimBLEScanCallbacks {
     std::string n = d->getName();
     if (n.empty()) return;
     std::lock_guard<std::mutex> lk(scanMutex);
-    scanNames[d->getAddress().toString()] = n;
+    const auto key = d->getAddress().toString();
+    if (scanNames.size() < 96 || scanNames.find(key) != scanNames.end()) scanNames[key] = n;
   }
   void onDiscovered(const NimBLEAdvertisedDevice* d) override { remember(d); }
   void onResult(const NimBLEAdvertisedDevice* d) override { remember(d); }
 };
 static ScanCb scanCb;
 
-std::vector<ScanEntry> scan(uint32_t ms) {
-  std::vector<ScanEntry> out;
-  NimBLEScan* sc = NimBLEDevice::getScan();
+// A single NimBLE scanner is shared by manual discovery and passive Presence.
+// The asynchronous scan never blocks loop(), and manual OBD operations cancel it.
+static bool presenceActive = false;
+static uint32_t presenceStart = 0;
+static uint32_t presenceDuration = 0;
+
+static void configureScan(NimBLEScan* sc) {
   {
     std::lock_guard<std::mutex> lk(scanMutex);
     scanNames.clear();
@@ -343,11 +349,12 @@ std::vector<ScanEntry> scan(uint32_t ms) {
   sc->setActiveScan(true);
   sc->setInterval(100);
   sc->setWindow(99);
-  // Ohne Duplikat-Filter: Der Controller merkt sich bereits gesehene Geräte auch über mehrere Scans
-  // hinweg und verwirft dann die Scan-Antwort – in der steht bei vielen Dongles der Name.
-  // Folge war: beim zweiten Suchen nur noch die MAC ohne Namen.
-  sc->setDuplicateFilter(0);   // (setScanCallbacks(..., true) setzt das ebenfalls)
-  NimBLEScanResults res = sc->getResults(ms, false);
+  sc->setDuplicateFilter(0);
+  sc->setMaxResults(64);  // bounded BLE host memory for nearby devices
+}
+
+static std::vector<ScanEntry> collectResults(const NimBLEScanResults& res) {
+  std::vector<ScanEntry> out;
   for (int i = 0; i < res.getCount(); i++) {
     const NimBLEAdvertisedDevice* d = res.getDevice(i);
     ScanEntry e;
@@ -359,7 +366,6 @@ std::vector<ScanEntry> scan(uint32_t ms) {
       auto it = scanNames.find(d->getAddress().toString());
       if (it != scanNames.end()) e.name = it->second.c_str();
     }
-    // Name trotzdem leer (z. B. Dongle sendet ihn nur selten): beim eingestellten Dongle den bekannten Namen nehmen
     if (e.name.isEmpty() && e.mac.equalsIgnoreCase(cfg.bleMac)) e.name = deviceName();
     e.rssi = d->getRSSI();
     e.addrRandom = d->getAddress().getType() == BLE_ADDR_RANDOM;
@@ -372,11 +378,54 @@ std::vector<ScanEntry> scan(uint32_t ms) {
                   d->isAdvertisingService(NimBLEUUID((uint16_t)0x18F0));
     out.push_back(e);
   }
-  sc->clearResults();
   std::sort(out.begin(), out.end(), [](const ScanEntry& a, const ScanEntry& b) {
     if (a.likelyObd != b.likelyObd) return a.likelyObd;
     return a.rssi > b.rssi;
   });
+  return out;
+}
+
+void stopPresenceScan() {
+  if (!presenceActive) return;
+  presenceActive = false;  // cancelled scan must never count as a missing-device window
+  NimBLEScan* sc = NimBLEDevice::getScan();
+  if (sc->isScanning()) sc->stop();
+  sc->clearResults();
+}
+
+bool startPresenceScan(uint32_t ms) {
+  if (presenceActive || connected() || ms < 500 || ms > 10000) return false;
+  NimBLEScan* sc = NimBLEDevice::getScan();
+  if (sc->isScanning()) return false;   // e.g. existing manual discovery job
+  configureScan(sc);
+  presenceStart = millis();
+  presenceDuration = ms;
+  if (!sc->start(ms, false, true)) return false; // asynchronous, NimBLE 2.x
+  presenceActive = true;
+  return true;
+}
+
+bool isPresenceScanning() { return presenceActive; }
+
+bool takePresenceScanResults(std::vector<ScanEntry>& out) {
+  if (!presenceActive) return false;
+  NimBLEScan* sc = NimBLEDevice::getScan();
+  if (sc->isScanning()) return false;
+  presenceActive = false;
+  // Do not infer absence from a scan aborted by errors or a connection.
+  bool complete = millis() - presenceStart + 100 >= presenceDuration;
+  if (complete) out = collectResults(sc->getResults());
+  sc->clearResults();
+  return complete;
+}
+
+std::vector<ScanEntry> scan(uint32_t ms) {
+  stopPresenceScan();
+  NimBLEScan* sc = NimBLEDevice::getScan();
+  configureScan(sc);
+  NimBLEScanResults res = sc->getResults(ms, false);  // manual scan is intentionally blocking
+  auto out = collectResults(res);
+  sc->clearResults();
   return out;
 }
 
