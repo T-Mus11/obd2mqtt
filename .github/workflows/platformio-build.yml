@@ -40,3 +40,11 @@ jobs:
         run: python -m pip install 'platformio>=6,<7'
       - name: Build firmware (no upload)
         run: pio run -e ${{ matrix.environment }}
+      - name: Archive ESP32-WROOM OTA image (manual test only)
+        if: matrix.environment == 'esp32dev'
+        uses: actions/upload-artifact@v4
+        with:
+          name: obd2mqtt-esp32dev-ota-${{ github.sha }}
+          path: firmware/obd2mqtt-v*-esp32dev-ota.bin
+          if-no-files-found: error
+          retention-days: 14
