@@ -6,6 +6,7 @@
 #include "log.h"
 #include "i18n.h"
 #include "poller.h"
+#include "ble_presence.h"
 
 namespace MqttHa {
 
@@ -14,6 +15,7 @@ static PubSubClient mqtt(net);
 static uint32_t lastTry = 0;
 static bool discoveryPending = true;
 static std::vector<String> announced;   // bereits per Discovery angelegte Sensor-IDs
+static std::vector<String> announcedBle;   // enabled presence IDs announced this session
 
 String deviceId() {
   uint8_t m[6];
@@ -167,6 +169,37 @@ static void sendDiscovery() {
     d["icon"] = "mdi:car-info";
     publishConfig("sensor", "profile", d);
   }
+  // BLE Presence: tri-state sensor avoids mistaking UNKNOWN for NOT_IN_RANGE.
+  // One bridge device, independent entities per configured observed BLE device.
+  std::vector<String> currentBle;
+  if (cfg.blePresenceEnabled) {
+    for (const auto& b : cfg.blePresenceDevices) {
+      currentBle.push_back(b.id);
+      JsonDocument state;
+      state["name"] = b.name + " BLE presence";
+      state["state_topic"] = topic("ble/" + b.id + "/state");
+      state["icon"] = "mdi:bluetooth";
+      publishConfig("sensor", "ble_" + b.id + "_state", state);
+      JsonDocument rssi;
+      rssi["name"] = b.name + " BLE RSSI";
+      rssi["state_topic"] = topic("ble/" + b.id + "/rssi");
+      rssi["unit_of_measurement"] = "dBm";
+      rssi["device_class"] = "signal_strength";
+      rssi["entity_category"] = "diagnostic";
+      publishConfig("sensor", "ble_" + b.id + "_rssi", rssi);
+    }
+  }
+  for (const auto& old : announcedBle) {
+    bool found = false;
+    for (const auto& id : currentBle) if (id == old) { found = true; break; }
+    if (!found) {
+      JsonDocument empty1, empty2;
+      publishConfig("sensor", "ble_" + old + "_state", empty1);
+      publishConfig("sensor", "ble_" + old + "_rssi", empty2);
+    }
+  }
+  announcedBle = currentBle;
+  BlePresence::publishAll();
   { JsonDocument empty; publishConfig("update", "firmware", empty); }   // Update-Entität aus 0.3.23 wieder entfernen
   publishProfile();
   logf(T("MQTT Discovery gesendet (%u PIDs aktiv)", "MQTT discovery sent (%u PIDs active)"), (unsigned)now.size());
