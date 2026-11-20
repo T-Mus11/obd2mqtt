@@ -23,6 +23,12 @@ String dongleKind();                // grobe Typ-Erkennung anhand der UUIDs
 // Sendet einen Befehl und wartet auf den ELM-Prompt '>'. Rückgabe: Rohantwort (ohne '>')
 bool command(const String& cmd, String& response, uint32_t timeoutMs);
 
-std::vector<ScanEntry> scan(uint32_t ms);
+std::vector<ScanEntry> scan(uint32_t ms);   // existing manual blocking scan
+// Async, bounded background scan. Results are consumed only on the Arduino loop task.
+// A connection or manual scan cancels the active presence window (no false absence).
+bool startPresenceScan(uint32_t ms);
+bool isPresenceScanning();
+bool takePresenceScanResults(std::vector<ScanEntry>& out);
+void stopPresenceScan();
 
 }  // namespace ElmBle
