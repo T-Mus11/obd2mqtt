@@ -59,6 +59,17 @@ Adresy MAC w przykładzie są **fikcyjne**. Walidacja odrzuca niepoprawne ID/MAC
 6. Niezmierzone obciążenie BLE/Wi-Fi/heap. Trzeba sprawdzić wpływ na istniejący Poller oraz jego watchdog.
 7. Rejestr BLE nie daje jeszcze interfejsu poleceń HA, wielu profili ELM ani funkcji `poll_data(adapter_id)`. Następny etap M2.
 
+## Bramki przed pierwszym OTA na jedynym ESP32
+
+**Przygotowano kod, ale nie uruchamiano firmware na fizycznym ESP32.** Backup JSON po stronie użytkownika ma `type=obd2mqtt-backup`, `format=1`, `fw=0.3.24`, `with_secrets=true`; cztery profile, w tym Nissan. Aktywny zapisany profil: `ioniq5`. Pliku nie wgrywano do repo ani nie analizowano jego sekretów.
+
+- `LittleFS.begin(false)` nie formatuje pamięci po błędzie montowania; przy braku zamontowanego FS lub poprawnie odczytanej konfiguracji firmware uruchamia dostęp ratunkowy, ale **nie inicjuje sesji OBD** ani migracji profili. `GET /api/status` ujawnia `fs_mounted`.
+- Oznaczenie wersji: `0.3.24-m1-test`, aby odróżnić nowy build od działającej `0.3.24`. `deviceId()`, `mqttBase`, `haPrefix`, istniejące `unique_id` pozostawiono bez zmian.
+- CI udostępnia dwa obrazy OTA dla `esp32dev`: **testowy M1** z obecnego commita i **rollback zbudowany ze źródeł** `main@f830e845...`. Oba mają manifest SHA-256 i informacje o pochodzeniu. Rollback **nie jest potwierdzony jako identyczny** z firmware zainstalowanym na urządzeniu.
+- Przed instalacją należy pobrać **obydwa** artefakty do prywatnego katalogu Windows i porównać SHA-256 z plikami manifestu. Artifacty GitHub Actions mają określony czas retencji; nie mogą być jedyną kopią.
+- Pełen zrzut flash uzyskany wcześniej przez użytkownika **nie przeszedł porównania pierwszych 64 KiB**; nie jest podstawą rollback. Użytkownik zdecydował zakończyć tę metodę.
+- Brak automatycznych aktualizacji, merge lub zmian w HA. Do firmware potrzebna odrębna decyzja użytkownika i testy T02–T14.
+
 ## Rollback
 
 Nie wgrywać na produkcję w fazie WIP. Przed próbą na urządzeniu testowym zachować aktualny firmware v0.3.24, kopię konfiguracji/profili (bez commitowania sekretów) i wynik odczytu statusu. W przypadku błędu powrócić do uprzednio działającego firmware, z wyłączoną nową funkcją. Żadnych automatycznych aktualizacji/flashowania z CI.
