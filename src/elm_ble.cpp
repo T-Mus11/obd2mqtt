@@ -410,7 +410,10 @@ bool isPresenceScanning() { return presenceActive; }
 bool takePresenceScanResults(std::vector<ScanEntry>& out) {
   if (!presenceActive) return false;
   NimBLEScan* sc = NimBLEDevice::getScan();
-  if (sc->isScanning()) return false;
+  if (sc->isScanning()) {
+    if (millis() - presenceStart > presenceDuration + 3000UL) stopPresenceScan();
+    return false;
+  }
   presenceActive = false;
   // Do not infer absence from a scan aborted by errors or a connection.
   bool complete = millis() - presenceStart + 100 >= presenceDuration;
