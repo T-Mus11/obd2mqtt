@@ -1,6 +1,6 @@
 # BLE Presence M1 — testy odbiorowe i znane ograniczenia
 
-**Status:** WIP / testy jednostkowe hosta zaliczone; kompilacja PlatformIO i sprzęt niezweryfikowane. Implementacja tylko na gałęzi `feat/ble-presence-m1`. Nie scalać ani nie wgrywać bez testów i osobnej decyzji użytkownika.
+**Status:** WIP / testy jednostkowe i kompilacje PlatformIO zaliczone; testy sprzętowe i integracyjne z HA nadal niewykonane. Implementacja tylko na gałęzi `feat/ble-presence-m1`. Nie scalać ani nie wgrywać bez testów i osobnej decyzji użytkownika.
 **Baza:** `main` @ `f830e845c3bb8db1926860fb2d2448cf3e316a82` (v0.3.24). **Wymagania:** `docs/BLE_PRESENCE_BACKLOG.md` z Draft PR #1 (niescalony).
 
 ## Co faktycznie powstało
@@ -51,7 +51,7 @@ Adresy MAC w przykładzie są **fikcyjne**. Walidacja odrzuca niepoprawne ID/MAC
 
 ## Znane ograniczenia i ryzyka M1
 
-1. **Brak zweryfikowanej kompilacji i testów hardware.** Workflow GitHub Actions `.github/workflows/platformio-build.yml` został dodany, ale nie potwierdzono jego uruchomienia. Testy na hoście (`g++` C++11) dla samego automatu stanów zakończyły się powodzeniem; nie dowodzi to kompilacji firmware.
+1. **Testy sprzętowe nadal niewykonane.** CI run `44766236911` zakończył się sukcesem dla trzech środowisk PlatformIO i testu C++11, jednak nie potwierdza działania BLE/HA na urządzeniu. Pierwszy run `44765860938` nie przeszedł z powodu odziedziczonego, nieużywanego `src/online_update.cpp`, który odwoływał się do usuniętych w v0.3.24 symboli; plik pozostawiono, ale wyłączono z kompilacji (`build_src_filter` w `platformio.ini`).
 2. Obecny odczyt RSSI jest próbką z listy wyników skanowania, a nie pełnym strumieniem reklam. Brak trendów i ich heurystyk po stronie ESP.
 3. Nieregularne reklamy i skanowanie 4 s / 30 s mogą wymagać kalibracji. Nieobecność reklamy nie dowodzi odjazdu; `NOT_IN_RANGE` to tylko niewykrywalność.
 4. Urządzenia z rotującym MAC i bez stabilnego identyfikatora reklam nie są obsługiwane.
@@ -69,5 +69,6 @@ Nie wgrywać na produkcję w fazie WIP. Przed próbą na urządzeniu testowym za
 - Dodano kod M1 i kontrolny workflow na osobnej gałęzi, Draft PR #2.
 - Wprowadzono wydzielony `src/ble_presence_state.h` i `test/native/ble_presence_state_test.cpp`; **lokalnie uruchomiono** `g++ -std=c++11 -Wall -Wextra -Werror -Isrc ... && /tmp/ble_presence_state_test` — **PASS**, wynik 0. To tylko test logiki stanów, nie firmware/NimBLE.
 - Dodano test C++11 do workflow oraz poprawiono obsługę `UNKNOWN` przy nieaktualnym skanowaniu i trwałe czyszczenie MQTT Discovery.
-- Brak dostępu do działającego środowiska PlatformIO i do bezpośredniego klonowania repo w kontenerze; do momentu przejścia GitHub Actions kompilacja jest niepotwierdzona.
-- Nie wykonano testów sprzętu, OTA, merge ani wdrożenia.
+- Lokalny kontener nie ma PlatformIO ani dostępu sieciowego do klonowania repo, ale GitHub Actions skompilował firmware. **Run:** `44766236911`, dla commita `e2fd16d2c726f3ae711ddebb28110183a1c99bd6`: `native-presence-state=success`, `esp32dev=success`, `esp32c3=success`, `esp32s3=success`.
+- Raport rozmiarów z kompilacji: `esp32dev` RAM 60 256 B (18,4% przydzielonej pamięci statycznej), Flash 1 578 405 B (80,3% limitu aplikacji); `esp32c3` RAM 49 644 B (15,2%), Flash 1 510 888 B (76,8%); `esp32s3` RAM 55 500 B (16,9%), Flash 1 472 321 B (74,9%). **To statyczna metryka builda, nie pomiar wolnego heap podczas działania.**
+- Nie wykonano testów sprzętu/HA, OTA, merge ani wdrożenia; przed aktywacją wymagane T02–T14.
