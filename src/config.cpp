@@ -10,13 +10,16 @@ Profile profile;
 const char* MASK = "********";
 
 static const char* CONFIG_FILE = "/config.json";
+static bool filesystemMounted = false;
+bool fsMounted() { return filesystemMounted; }
 
 bool fsBegin() {
   // Never format LittleFS automatically: this device holds the only live copy
   // of user settings and vehicle profiles until an explicit restore is made.
   // On mount failure, leave flash untouched and let main boot into recovery
   // access-point mode with BLE polling disabled.
-  if (!LittleFS.begin(false)) return false;
+  filesystemMounted = LittleFS.begin(false);
+  if (!filesystemMounted) return false;
   if (!LittleFS.exists("/profiles")) LittleFS.mkdir("/profiles");
   installDefaultProfiles(false);
   return true;
