@@ -22,6 +22,51 @@ jobs:
         run: |
           g++ -std=c++11 -Wall -Wextra -Werror -Isrc test/native/ble_presence_state_test.cpp -o /tmp/ble_presence_state_test
           /tmp/ble_presence_state_test
+  rollback-v0324:
+    # Rebuild of the known repository baseline, NOT a byte-for-byte dump of the
+    # already-installed device. Keep this artifact locally before any OTA test.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout v0.3.24 source baseline
+        uses: actions/checkout@v4
+        with:
+          ref: f830e845c3bb8db1926860fb2d2448cf3e316a82
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install PlatformIO
+        run: python -m pip install 'platformio>=6,<7'
+      - name: Exclude orphaned online updater (not referenced in v0.3.24)
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path("platformio.ini")
+          source = path.read_text()
+          anchor = "board_build.partitions = min_spiffs.csv"
+          assert anchor in source and "build_src_filter" not in source
+          source = source.replace(anchor, "build_src_filter = +<*> -<online_update.cpp>\n" + anchor)
+          path.write_text(source)
+          PY
+      - name: Compile baseline esp32dev OTA image, no upload
+        run: pio run -e esp32dev
+      - name: Generate provenance and checksum
+        run: |
+          test -s firmware/obd2mqtt-v0.3.24-esp32dev-ota.bin
+          sha256sum firmware/obd2mqtt-v0.3.24-esp32dev-ota.bin > firmware/SHA256SUMS-v0.3.24.txt
+          printf '%s\n' 'Source: T-Mus11/obd2mqtt@f830e845c3bb8db1926860fb2d2448cf3e316a82' 'Board: esp32dev / ESP32-WROOM-32D' 'Build: online_update.cpp excluded because its obsolete references break compilation' 'Important: source rebuild, NOT verified identical to installed firmware v0.3.24' 'Use: rollback only after explicit user approval, with validated JSON config backup' > firmware/ROLLBACK-SOURCE-v0.3.24.txt
+      - name: Archive baseline rollback files for manual download
+        uses: actions/upload-artifact@v4
+        with:
+          name: rollback-source-rebuild-v0.3.24-esp32dev
+          path: |
+            firmware/obd2mqtt-v0.3.24-esp32dev-ota.bin
+            firmware/SHA256SUMS-v0.3.24.txt
+            firmware/ROLLBACK-SOURCE-v0.3.24.txt
+          if-no-files-found: error
+          retention-days: 30
+
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 20
