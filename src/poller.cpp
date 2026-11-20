@@ -896,6 +896,7 @@ void statusJson(JsonDocument& d) {
   std::lock_guard<std::mutex> lk(mtx);
   uint32_t now = millis();
   d["fw"] = FW_VERSION;
+  d["fs_mounted"] = fsMounted();   // false means configuration was not loaded; no destructive auto-format
   d["uptime"] = now / 1000;
   d["heap"] = ESP.getFreeHeap();
   d["heap_min"] = ESP.getMinFreeHeap();
