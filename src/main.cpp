@@ -173,14 +173,14 @@ void setup() {
   Serial.begin(115200);
   delay(200);
   bool fsOk = fsBegin();
-  bool cfgOk = loadConfig();
+  bool cfgOk = fsOk && loadConfig();
   // Zeitzone sofort setzen: nach einem Software-Neustart läuft die Uhr weiter, Log-Zeilen sollen gleich Ortszeit haben
   timeInit(cfg.tz.c_str());
   logf("OBD2MQTT %s start", FW_VERSION);
-  if (!fsOk) logf("LittleFS error!");
+  if (!fsOk) logf("LittleFS mount failed: flash left untouched; BLE polling disabled, recovery AP available");
   Watchdog::begin();
   logBootCheck(Watchdog::crashCount());
-  migrateProfiles();   // nach loadConfig, damit die Sprache für Auswahllisten stimmt
+  if (fsOk) migrateProfiles();   // only modify profiles when the existing filesystem mounted
   if (!cfgOk) logf("%s", T("Keine Konfiguration – Standardwerte", "No configuration – using defaults"));
   logSetPersist(cfg.logPersist);
   configTzTime(cfg.tz.c_str(), cfg.ntpServer.c_str(), "time.cloudflare.com");
@@ -189,7 +189,7 @@ void setup() {
   if (MDNS.begin(cfg.hostname.c_str())) MDNS.addService("http", "tcp", 80);
 
   MqttHa::begin();
-  Poller::begin(!Watchdog::safeMode());
+  Poller::begin(fsOk && !Watchdog::safeMode());
   Web::begin();
   Watchdog::armTaskWdt();
 }
