@@ -22,6 +22,13 @@ jobs:
         run: |
           g++ -std=c++11 -Wall -Wextra -Werror -Isrc test/native/ble_presence_state_test.cpp -o /tmp/ble_presence_state_test
           /tmp/ble_presence_state_test
+      - name: Verify non-destructive boot and stable HA Discovery identity
+        run: |
+          ! grep -R 'LittleFS.begin(true)' src
+          grep -Fq 'LittleFS.begin(false)' src/config.cpp
+          grep -Fq 'Poller::begin(fsOk && cfgOk && !Watchdog::safeMode())' src/main.cpp
+          grep -Fq 'if (fsOk && cfgOk) migrateProfiles()' src/main.cpp
+          grep -Fq 'd["unique_id"] = deviceId() + "_" + objId;' src/mqtt_ha.cpp
   rollback-v0324:
     # Rebuild of the known repository baseline, NOT a byte-for-byte dump of the
     # already-installed device. Keep this artifact locally before any OTA test.
