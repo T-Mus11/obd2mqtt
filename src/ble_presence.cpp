@@ -1,4 +1,5 @@
 #include "ble_presence.h"
+#include "ble_presence_state.h"
 #include <vector>
 #include <time.h>
 #include "config.h"
@@ -17,9 +18,8 @@ constexpr uint8_t kMissedWindows = 3;
 
 struct Observation {
   String id, mac, name;
-  String state = "UNKNOWN";
+  Tracker tracker;
   int rssi = 0;             // zero = not measured (never sent as a dBm sample)
-  uint8_t misses = 0;
   uint32_t lastRssiPublish = 0;
 };
 
@@ -29,26 +29,25 @@ uint32_t nextScanAt = 0;
 uint32_t lastConfigCheck = 0;
 
 void publishState(const Observation& d) {
-  MqttHa::publishText("ble/" + d.id + "/state", d.state);
+  MqttHa::publishText("ble/" + d.id + "/state", stateText(d.tracker.state));
 }
 
 void publishRssi(const Observation& d) {
   MqttHa::publishText("ble/" + d.id + "/rssi",
-                      d.state == "IN_RANGE" && d.rssi < 0 ? String(d.rssi) : String("unknown"));
+                      d.tracker.state == State::InRange && d.rssi < 0 ? String(d.rssi) : String("unknown"));
 }
 
-void transition(Observation& d, const String& to, uint32_t now) {
-  if (d.state == to) return;
-  String from = d.state;
-  d.state = to;
+void transition(Observation& d, State from, uint32_t now) {
+  State to = d.tracker.state;
+  if (from == to) return;
   publishState(d);
   publishRssi(d);
-  // UNKNOWN after boot is not a physical movement event.
-  if (from == "UNKNOWN" || to == "UNKNOWN") return;
+  // UNKNOWN after boot, scan pause or restart is not a movement event.
+  if (from == State::Unknown || to == State::Unknown) return;
   JsonDocument evt;
   evt["id"] = d.id;
-  evt["from"] = from;
-  evt["to"] = to;
+  evt["from"] = stateText(from);
+  evt["to"] = stateText(to);
   evt["uptime_ms"] = now;
   String json;
   serializeJson(evt, json);
@@ -97,24 +96,27 @@ void syncConfig() {
 void processWindow(const std::vector<ElmBle::ScanEntry>& seen, uint32_t now) {
   for (auto& d : devices) {
     const ElmBle::ScanEntry* match = nullptr;
-    for (const auto& e : seen) {
+    for (const auto& e : seen)
       if (e.mac.equalsIgnoreCase(d.mac)) { match = &e; break; }
-    }
+
+    State before = d.tracker.state;
+    bool changed = d.tracker.completeWindow(match != nullptr, now, kMissedWindows);
     if (match) {
-      d.misses = 0;
       int previousRssi = d.rssi;
       d.rssi = match->rssi;
-      if (d.state != "IN_RANGE") transition(d, "IN_RANGE", now);
+      if (changed) transition(d, before, now);
       else if (previousRssi != d.rssi &&
-               (d.lastRssiPublish == 0 || now - d.lastRssiPublish >= 30000)) publishRssi(d);
+               (d.lastRssiPublish == 0 || (uint32_t)(now - d.lastRssiPublish) >= 30000))
+        publishRssi(d);
       d.lastRssiPublish = now;
-      if (timeValid()) MqttHa::publishText("ble/" + d.id + "/last_seen_epoch", String((uint32_t)time(nullptr)));
-    } else {
-      if (d.misses < kMissedWindows) ++d.misses;
-      if (d.misses >= kMissedWindows) transition(d, "NOT_IN_RANGE", now);
+      if (timeValid())
+        MqttHa::publishText("ble/" + d.id + "/last_seen_epoch", String((uint32_t)time(nullptr)));
+    } else if (changed) {
+      transition(d, before, now);
     }
   }
 }
+
 }  // namespace
 
 void publishAll() {
@@ -130,6 +132,12 @@ void loop() {
   if (lastConfigCheck == 0 || now - lastConfigCheck >= 1000) {
     lastConfigCheck = now;
     syncConfig();
+  }
+  // No completed window for a long time => telemetry becomes UNKNOWN, not stale IN_RANGE.
+  // Keep this check before the early return for long ELM sessions or Wi-Fi outages.
+  for (auto& d : devices) {
+    State before = d.tracker.state;
+    if (d.tracker.markStale(now, 120000UL)) transition(d, before, now);
   }
   if (!enabled || devices.empty() || Poller::isPaused()) {
     ElmBle::stopPresenceScan();
