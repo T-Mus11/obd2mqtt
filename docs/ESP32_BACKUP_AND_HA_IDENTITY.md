@@ -12,35 +12,15 @@
 
 **Weryfikacja z kodu:** `src/web.cpp` eksportuje ustawienia przez `configToJson(cd,!secrets)` oraz wszystkie profile z `listProfiles()`; import wczytuje konfigurację i profile. `src/config.cpp` zapisuje ustawienia do LittleFS (`/config.json`), a profile do `/profiles/*.json`.
 
-## Warstwa 2: pełny obraz aktualnej pamięci flash (USB, Windows)
+## Warstwa 2: możliwość powrotu do v0.3.24 (bez pełnego zrzutu flash)
 
-Obraz flash zgrywa się **z aktualnie działającej płytki**, a nie pobiera z GitHub Releases: może zawierać inną wersję, niestandardowy układ partycji, aktywne profile, hasła i zmiany konfiguracji.
+**Stan użytkownika na 2026-11-20:** ESP32-D0WD, 4 MB flash, port COM8 podczas odczytu. Pełny 4 MiB obraz `esp32-backup.bin` został złożony z czterech odczytów, ale pierwsze 64 KiB nie odpowiadają osobnemu wcześniejszemu odczytowi. Powodu rozbieżności nie zdiagnozowano. **Nie traktować obrazu jako bezpiecznego do przywracania.** Użytkownik zdecydował, że dalsze zrzuty flash nie są potrzebne.
 
-1. Przed odpięciem USB/zmianą połączeń zanotować obecny adres IP, nazwę MQTT, ID urządzenia i działające encje HA. Zamknąć Serial Monitor / inne aplikacje używające portu COM.
-2. Podłączyć ESP32-WROOM-32D przewodem USB z transmisją danych; ustalić port COM w Windows. Nie zakładać, że numer COM z poprzedniego testu jest wciąż aktualny.
-3. Zainstalować aktualny `esptool` w Pythonie: `py -m pip install --upgrade esptool`.
-4. **Tylko odczyt:** sprawdzić chip i flash:
-   ```powershell
-   py -m esptool --chip esp32 --port COMx flash-id
-   py -m esptool --chip esp32 --port COMx read-mac
-   ```
-5. **Tylko odczyt:** zrobić obraz o rozmiarze rozpoznanym automatycznie (esptool v5):
-   ```powershell
-   py -m esptool --chip esp32 --port COMx -b 460800 read-flash 0 ALL esp32-before-m1-full-flash.bin
-   Get-Item .\esp32-before-m1-full-flash.bin | Select-Object Name,Length
-   Get-FileHash .\esp32-before-m1-full-flash.bin -Algorithm SHA256
-   ```
-   Rozmiar pliku porównać z `flash-id` (dla 4 MB = 4 194 304 B). W razie niestabilnej transmisji zmniejszyć baud, np. do 115200.
-6. Dla pewności wykonać **drugi odczyt** do pliku o innej nazwie i porównać SHA256. Dopiero wtedy kopię uznać za wiarygodną. Po odczycie może być konieczny reset urządzenia, aby opuścić tryb bootloadera.
-7. Obraz flash może zawierać pełne sekrety i należy go przechowywać zaszyfrowanego i prywatnie, **nigdy w repozytorium**. Nie jest uniwersalnym backupem na inny ESP32: eFuse i klucze bezpieczeństwa nie znajdują się w obrazie flash.
+Dla szybkiego rollback potrzebny jest obraz **aplikacji OTA** z poprzednio działającej wersji, a nie pełen obraz pamięci z bootloaderem i danymi. Nie udało się potwierdzić dostępności oryginalnego, identycznego pliku OTA aktualnie zainstalowanej wersji. Dodany w CI job `rollback-v0324` odtwarza OTA z **niezmiennego commita** `main@f830e845c3bb8db1926860fb2d2448cf3e316a82`. Ponieważ ten commit zawiera osierocony `src/online_update.cpp` (używa nieistniejących `cfg.updateCheck` i `ElmBle::shutdown()`), CI wyłącza ten jeden plik **wyłącznie w środowisku kompilacji**. Z tego względu obraz jest **kompilacją źródeł v0.3.24**, ale **nie potwierdzono identyczności binarnej z firmware na urządzeniu**.
 
-**Odtwarzanie pełnego obrazu — tylko awaryjnie na tej samej płytce**, po sprawdzeniu identyfikatora chipu, rozmiaru obrazu, SHA256 oraz statusu flash encryption / secure boot:
-```powershell
-py -m esptool --chip esp32 --port COMx write-flash 0x0 esp32-before-m1-full-flash.bin
-```
-Nie używać `erase-flash` ani `--force` w typowej procedurze. Cały zapis flash zastępuje także bieżące konfiguracje, NVS, firmware i LittleFS ich zawartością **z momentu wykonania kopii**. To operacja wyłącznie odzyskiwania, nie standardowa metoda aktualizacji. Gdy zabezpieczenia flash są aktywne albo rozmiar danych się nie zgadza, przerwać i zweryfikować procedurę.
+Artefakt GitHub Actions `rollback-source-rebuild-v0.3.24-esp32dev` obejmuje aplikację OTA, SHA256SUMS i pochodzenie źródła. **Przed pierwszą aktualizacją pobrać go z udanego uruchomienia CI, zweryfikować sumę SHA-256 i zachować prywatnie, poza repo.** Alternatywnie użyć oryginalnego firmware OTA v0.3.24 po niezależnym potwierdzeniu jego autentyczności, zgodności ze sprzętem oraz formatu. Sama obecność artefaktu z GitHub nie jest jeszcze dowodem, że został zapisany na komputerze użytkownika.
 
-Źródło poleceń: oficjalne `esptool` Espressif, polecenia `flash-id`, `read-flash`, `write-flash`: https://docs.espressif.com/projects/esptool/en/latest/esp32/esptool/basic-commands.html
+Rollback przez panel WWW używa aplikacji OTA dla `esp32dev`, bez kasowania LittleFS/NVS. Jeśli panel/firmware nie startuje, konieczna może być odbudowa przez USB z pełnego, właściwego obrazu factory lub obrazu kompatybilnego z partycjami; **nie używać pliku OTA jako obrazu factory pod adresem 0x0**. Nie modyfikować flash bez osobnego planu i zgody.
 
 ## Normalne aktualizacje M1, M2, ...: OTA, nie pełny flash
 
@@ -48,7 +28,7 @@ Nie używać `erase-flash` ani `--force` w typowej procedurze. Cały zapis flash
 - OTA zapisuje partycję aplikacji i zwykle zachowuje pozostałe dane LittleFS/NVS, dlatego istniejąca konfiguracja nie powinna się wyzerować; jednak wymaga sprawdzenia na tym urządzeniu, nie stanowi zamiennika kopii flash.
 - Nigdy nie modyfikować układu partycji podczas zwykłego OTA, nie używać `erase-flash` i nie wgrywać obrazu dla `esp32s3`/`esp32c3` na klasyczny `esp32dev`.
 - Przed każdą wersją zachować: aktualny backup JSON, działający poprzedni obraz OTA, commit nowej wersji i hash pliku. Po aktualizacji sprawdzić web UI, MQTT, PID-y i identyfikatory encji.
-- **Ryzyko wymagające późniejszego utwardzenia:** w obecnym `src/config.cpp` `LittleFS.begin(true)` może **sformatować filesystem po nieudanym montowaniu**; z tego powodu backup przed testem jest obowiązkowy. Rozważyć zmianę na tryb niewykonujący automatycznego formatowania i jawne odzyskiwanie.
+- **Zabezpieczenie M1 przygotowane:** `src/config.cpp` używa `LittleFS.begin(false)`, a `src/main.cpp` nie uruchamia migracji profili ani pollingu BLE po błędzie montowania. `GET /api/status` ujawnia `fs_mounted`. Po błędzie dane pozostają nietknięte; bez sprawnego LittleFS przywracanie JSON wymaga najpierw naprawy/prowizjonowania filesystemu (nie odbywa się automatycznie). Wymagany test na sprzęcie.
 
 ## Kontrakt zachowania obecnego HA — MUST NOT CHANGE
 
@@ -62,14 +42,18 @@ Dla **tego samego fizycznego ESP32** i aktualizacji OTA:
 - przed release wykonywać regresję: urządzenie MQTT pozostało jedno, istniejące encje mają te same `unique_id`, entity IDs / automatyzacje HA działają; nowe encje się pojawiają; usunięte encje są czyszczone jawnie;
 - zmianę MQTT base, HA prefix lub struktury `unique_id` traktować jak **migrację wymagającą osobnego planu**, nie zwykły update.
 
+## Potwierdzony stan backupu konfiguracji na 2026-11-20
+
+Użytkownik sprawdził plik wyeksportowany z fizycznego ESP32: `type=obd2mqtt-backup`, `format=1`, `fw=0.3.24`, `with_secrets=true`, 4 profile, w tym Nissan. Aktywny w JSON nadal jest `ioniq5` — nie zmieniano tej wartości. Plik znajduje się po stronie użytkownika; asystent nie posiada kopii, nie widział jego zawartości ani nie testował odtwarzania. Plik zawiera sekrety.
+
 ## Bramka przed M1 na jedynym hardware
 
-- [ ] Zapisano JSON `with_secrets=true` i sprawdzono obecność wszystkich profili
-- [ ] Zgrano pełny obraz flash przez USB i zapisano SHA256
-- [ ] Drugi zrzut lub równoważna kontrola potwierdziły spójność obrazu
-- [ ] Zanotowano COM, chip/flash size, IP, MAC, wersję firmware oraz MQTT `deviceId`, `mqtt_base` i `ha_prefix` **bez ujawniania haseł**
-- [ ] Potwierdzono, że istniejące urządzenie i encje HA działają
-- [ ] Wybrano właściwy build OTA `esp32dev` i bezpieczny sposób odtworzenia przy awarii
-- [ ] Użytkownik osobno zatwierdził wgrywanie na fizyczne ESP32
+- [x] Użytkownik zweryfikował format JSON, obecność haseł i 4 profili, w tym Nissan
+- [ ] Użytkownik zachował zaszyfrowaną kopię JSON poza repo i potwierdził jej lokalizację
+- [ ] Odtworzone OTA v0.3.24 z niezmiennego źródła przeszło CI; artefakt z SHA256 zapisano poza GitHub
+- [x] Wyeliminowano automatyczne formatowanie LittleFS i dodano jawny status montowania w kodzie M1 (bez testu na sprzęcie)
+- [ ] Nowy obraz M1 `esp32dev` (wersja `0.3.24-m1-test`) z jednego commita przeszedł CI i ma zachowaną sumę kontrolną
+- [ ] Przed OTA zanotowano rzeczywistą wartość `mqtt_base`, `ha_prefix`, wersję firmware oraz aktualne encje HA, bez ujawniania sekretów
+- [ ] Przed OTA użytkownik osobno zatwierdził wgrywanie do fizycznego ESP32
 
-**Stan:** Nie wykonano żadnego z punktów na fizycznym ESP32; ten dokument jest procedurą, a nie potwierdzeniem backupu.
+**Bez zmian na fizycznym urządzeniu:** żadnej operacji OTA, erase/flash, restore, restart ani modyfikacji konfiguracji HA nie wykonano w ramach prac nad PR #2.
