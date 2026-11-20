@@ -67,7 +67,7 @@ Nie wgrywać na produkcję w fazie WIP. Przed próbą na urządzeniu testowym za
 
 - Odczytano aktualne pliki gałęzi `main`, w tym `README.md`, `platformio.ini`, `src/elm_ble.cpp`, `src/poller.cpp`, `src/mqtt_ha.cpp` i konfigurację. W katalogu głównym brak `AGENTS.md`.
 - Dodano kod M1 i kontrolny workflow na osobnej gałęzi, Draft PR #2.
-- Wprowadzono wydzielony `src/ble_presence_state.h` i `test/native/ble_presence_state_test.cpp`; **lokalnie uruchomiono** `g++ -std=c++11 -Wall -Wextra -Werror -Isrc ... && /tmp/ble_presence_state_test` — **PASS**, wynik 0. To tylko test logiki stanów, nie firmware/NimBLE.
+- Wprowadzono wydzielony `src/ble_presence_state.h` i `test/native/ble_presence_state_test.cpp`; test skompilowano i uruchomiono **w GitHub Actions** (`native-presence-state`, run `44766236911`) komendą `g++ -std=c++11 -Wall -Wextra -Werror -Isrc ...` — **PASS**. Nie uruchomiono go lokalnie w tym środowisku. To tylko test logiki stanów, nie test sprzętowy NimBLE/ESP32.
 - Dodano test C++11 do workflow oraz poprawiono obsługę `UNKNOWN` przy nieaktualnym skanowaniu i trwałe czyszczenie MQTT Discovery.
 - Lokalny kontener nie ma PlatformIO ani dostępu sieciowego do klonowania repo, ale GitHub Actions skompilował firmware. **Run:** `44766236911`, dla commita `e2fd16d2c726f3ae711ddebb28110183a1c99bd6`: `native-presence-state=success`, `esp32dev=success`, `esp32c3=success`, `esp32s3=success`.
 - Raport rozmiarów z kompilacji: `esp32dev` RAM 60 256 B (18,4% przydzielonej pamięci statycznej), Flash 1 578 405 B (80,3% limitu aplikacji); `esp32c3` RAM 49 644 B (15,2%), Flash 1 510 888 B (76,8%); `esp32s3` RAM 55 500 B (16,9%), Flash 1 472 321 B (74,9%). **To statyczna metryka builda, nie pomiar wolnego heap podczas działania.**
