@@ -99,6 +99,27 @@
 **Jako** administrator **chcę** udokumentowanych scenariuszy testowych **aby** odróżnić uśpienie Vgate od wyjazdu.
 **Akceptacja:** badanie zaparkowanego auta z wyłączonym zapłonem, zaśnięcia/wybudzenia Vgate **w tym po otwarciu drzwi bez kluczyka**, faktycznego wyjazdu/powrotu, innych tagów, reboot ESP32, utraty Wi-Fi/MQTT i dłuższej sesji OBD; scenariusze przekręcenia kluczyka np. po 1/5/9 min od wykrycia BLE oraz pełne 10 min bez zapłonu przy próbach co 30 s; weryfikacja poprawnej odpowiedzi PID i zakończenia serii, porównanie poboru energii i czasu ponownego uśpienia adaptera; zapis RSSI i czasu, bez wniosków o fizycznym ruchu; wyniki i hipotezy udokumentowane.
 
+## Epic H — Diagnostyka DTC na żądanie (etap późniejszy, poza MVP)
+
+### US-19 [P2] — Rozpoznawanie nowych błędów pojazdu i rekomendowanie działań
+**Jako** system Home Assistant zarządzający wieloma pojazdami **chcę** wykrywać nowe kody usterek (DTC) przypisane do konkretnego adaptera/pojazdu i móc na żądanie wywołać ich szczegółowy odczyt, interpretację oraz ocenę pilności **aby** przekazać użytkownikowi zrozumiałą informację o problemie i zalecane kolejne działania.
+
+**Kryteria akceptacji:**
+1. Identyfikacja **pojazdu/adaptera** jest jednoznaczna (`adapter_id`), a historia usterek oddzielna dla każdego samochodu; nie mieszamy wyników między profilami.
+2. HA porównuje **zestaw rzeczywiście odczytanych kodów DTC** z poprzednim poprawnym zestawem dla tego samego pojazdu. Odróżnia `new`, `still_present`, `no_longer_reported` oraz `unknown/not_read`; nie interpretuje braku odpowiedzi jako braku usterek. Odczyt samego MIL/licznika DTC nie jest wystarczający do ustalenia ich rodzaju.
+3. Dostępne jest **jawne żądanie diagnostyczne dla wskazanego `adapter_id`**, odrębne od odczytu zwykłych PID-ów; kontrakt komend/odpowiedzi (MQTT/HA), `request_id`, timeout, status i korelacja odpowiedzi powstaną w osobnym refinement API wieloadapterowego. Żądanie może być wywołane z automatyzacji HA lub na polecenie użytkownika.
+4. Odczyt obejmuje, **jeśli ECU i adapter obsługują**: Mode 03 (stored/confirmed), Mode 07 (pending), Mode 0A (permanent) oraz wybrane dostępne dane towarzyszące Mode 02 (freeze frame). Zapisywane są także surowa odpowiedź, tryb, czas, status odpowiedzi i źródło ECU, jeśli dostępne. Brak danych freeze frame lub danego trybu nie powoduje tworzenia domyślonych wartości.
+5. System odróżnia **odczyt kodu DTC** od **jego interpretacji**. Standardowe opisy kodów mogą być używane z lokalnej, wersjonowanej bazy; interpretacje producenta wymagają odpowiedniego źródła dla marki/modelu/ECU. Kod specyficzny dla producenta bez wiarygodnej definicji otrzymuje status `interpretation_unknown`.
+6. HA prezentuje: kod, typ (stored/pending/permanent), opis wraz ze źródłem, czas odczytu, dostępne parametry freeze frame, ocenę pilności i rekomendowane czynności (np. sprawdzenie dokumentacji, ponowna diagnostyka, wizyta w serwisie). Oddziela **fakty z ECU**, **interpretacje** i **rekomendacje**; poziom pewności oraz ograniczenia źródeł są jawne. Nie przedstawia diagnozy mechanicznej jako pewnej na podstawie samego kodu.
+7. Powiadomienia o **nowych** kodach nie powtarzają się przy identycznych kolejnych odczytach; wymagana jest obsługa powrotu kodu po jego rzeczywistym zniknięciu. Brak odczytu i `NO DATA` są raportowane diagnostycznie, bez fałszywych alarmów o usunięciu usterki.
+8. **Tryb tylko do odczytu:** automatyzacja nie używa Mode 04 (kasowanie DTC), nie wysyła komend aktuacyjnych i nie kasuje żadnych danych diagnostycznych. Ewentualne kasowanie błędów wymaga osobnej user story i wyraźnego potwierdzenia użytkownika.
+9. Odczyt podlega globalnym limitom i kolejce sesji OBD (bez równoległego użycia BLE, z timeout, cooldown i ochroną akumulatora). Jeżeli ECU jest nieaktywne, zwracany jest jawny status, bez nieograniczonego ponawiania.
+10. Testy obejmują: brak DTC, jeden i wiele kodów, stored/pending/permanent, nieobsługiwany tryb/freeze frame, brak ECU, zanik BLE i MQTT, dwa pojazdy, powracający kod, nieznany kod producenta i brak źródła interpretacji. Dane testowe są syntetyczne lub odczytowe; bez wywoływania rzeczywistej usterki i bez kasowania kodów.
+
+**Zależności:** rejestr wielu adapterów (US-01), rozdzielenie encji/stanów HA (US-10), bezpieczna kolejka i sesje OBD (US-14, US-16), projekt komend `poll_data(adapter_id)` / `read_dtc(adapter_id)` oraz wieloprofilowość (do dopisania jako osobne stories w refinement MVP). Tę funkcję planujemy **po** stabilizacji wieloadapterowego MVP.
+
+**Poza zakresem:** naprawa pojazdu przez automatyzację, automatyczne kasowanie DTC, pełna diagnostyka producenta, gwarancja dostępności opisów dla każdego kodu oraz obowiązkowe użycie chmurowych modeli do interpretacji.
+
 ## Definition of Done — wspólne
 
 Story jest DONE, jeśli **wszystkie mające zastosowanie** punkty są spełnione:
@@ -126,8 +147,9 @@ Dla **samych stories dokumentacyjnych** DoD: spójne i testowalne kryteria, prze
 | M2 Diagnostyka | US-06,08,09,18 | Trend i pomiary terenowe |
 | M3 OBD Trigger | US-12,13,14 | Bezpieczne, ograniczone odczyty |
 | M4 Rozszerzenia | US-03,15 | Identyfikacja tagów i panel |
+| M5 Diagnostyka DTC | US-19, po kontrakcie API wieloadapterowego | Odczyt kodów i danych towarzyszących na żądanie HA, interpretacja i rekomendacje bez kasowania błędów |
 
-US-14 jest **bramką** dla automatycznych odczytów; US-16/17 są obowiązkowe przy każdym etapie implementacji.
+US-14 jest **bramką** dla automatycznych odczytów; US-16/17 są obowiązkowe przy każdym etapie implementacji. US-19 pozostaje poza MVP i wymaga wcześniejszego refinement kontraktu HA ↔ ESP32 dla wielu adapterów.
 
 ## Obserwacje terenowe — Nissan Qashqai / Vgate iCar Pro BLE (2026-11-18)
 
@@ -154,6 +176,7 @@ US-14 jest **bramką** dla automatycznych odczytów; US-16/17 są obowiązkowe p
 - Tryb harmonogramowania OBD przy wielu adapterach (pierwszy etap: wyłącznie wspierana istniejąca sesja ELM).
 - Liczba ponowień/cooldown i walidacja napięcia Vgate względem multimetru.
 - Analiza po testach uśpienia Vgate: BLE nieobecny może oznaczać sleep, nie oddalenie.
+- US-19 (późniejszy etap): zakres Mode 03/07/0A i Mode 02 dla konkretnych ECU, format surowych ramek, źródła opisów DTC, reguły ocen pilności, polityka lokalnego/ewentualnie zewnętrznego wyjaśniania usterek oraz kontrakt `read_dtc(adapter_id)`.
 
 ## Zweryfikowane punkty wejścia aktualnego kodu
 
