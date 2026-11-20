@@ -3,6 +3,7 @@ on:
   pull_request:
     paths:
       - 'src/**'
+      - 'test/native/**'
       - 'platformio.ini'
       - '.github/workflows/platformio-build.yml'
   workflow_dispatch:
@@ -11,6 +12,16 @@ permissions:
   contents: read
 
 jobs:
+  native-presence-state:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Compile and run portable BLE state-machine tests
+        run: |
+          g++ -std=c++11 -Wall -Wextra -Werror -Isrc test/native/ble_presence_state_test.cpp -o /tmp/ble_presence_state_test
+          /tmp/ble_presence_state_test
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 20
