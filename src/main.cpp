@@ -8,6 +8,7 @@
 #include "i18n.h"
 #include "mqtt_ha.h"
 #include "poller.h"
+#include "ble_presence.h"
 #include "watchdog.h"
 #include "web.h"
 
@@ -202,6 +203,8 @@ void loop() {
   MqttHa::loop();
   Watchdog::step("Poller");
   Poller::loop();
+  Watchdog::step("BLE presence");
+  BlePresence::loop();
   Watchdog::step("Web");
   Web::loop();
 
