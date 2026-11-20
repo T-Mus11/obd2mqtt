@@ -294,7 +294,9 @@ void configFromJson(JsonVariantConst s) {
       BlePresenceDevice d;
       d.id = o["id"].as<String>(); d.id.trim(); d.id.toLowerCase();
       d.mac = o["mac"].as<String>(); d.mac.trim(); d.mac.toUpperCase();
-      d.name = o["name"] | d.id;
+      d.name = o["name"].is<const char*>() ? o["name"].as<String>() : d.id;
+      d.name.trim();
+      if (d.name.isEmpty()) d.name = d.id;
       if (!validProfileName(d.id) || d.mac.length() != 17) continue;
       bool validMac = true;
       for (unsigned i = 0; i < 17; i++) {
