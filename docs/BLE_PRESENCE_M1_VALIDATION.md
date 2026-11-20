@@ -1,15 +1,15 @@
 # BLE Presence M1 — testy odbiorowe i znane ograniczenia
 
-**Status:** WIP / niezweryfikowane na ESP32. Implementacja tylko na gałęzi `feat/ble-presence-m1`. Nie scalać ani nie wgrywać bez testów i osobnej decyzji użytkownika.
+**Status:** WIP / testy jednostkowe hosta zaliczone; kompilacja PlatformIO i sprzęt niezweryfikowane. Implementacja tylko na gałęzi `feat/ble-presence-m1`. Nie scalać ani nie wgrywać bez testów i osobnej decyzji użytkownika.
 **Baza:** `main` @ `f830e845c3bb8db1926860fb2d2448cf3e316a82` (v0.3.24). **Wymagania:** `docs/BLE_PRESENCE_BACKLOG.md` z Draft PR #1 (niescalony).
 
 ## Co faktycznie powstało
 
 - Moduł `BlePresence`: do 8 urządzeń ze stałym MAC i logicznym ID.
 - Nieblokujące okna BLE 4000 ms co 30000 ms, jeden skaner NimBLE; dotychczasowe ręczne skanowanie zachowane.
-- Stany `UNKNOWN`, `IN_RANGE`, `NOT_IN_RANGE`; brak reklam w trzech **zakończonych** oknach jest warunkiem NOT_IN_RANGE. Przerwane okno nie zwiększa licznika.
+- Stany `UNKNOWN`, `IN_RANGE`, `NOT_IN_RANGE`; brak reklam w trzech **zakończonych** oknach jest warunkiem NOT_IN_RANGE. Przerwane okno nie zwiększa licznika. Po 120 s bez poprawnego zakończenia jakiegokolwiek okna skanowania stan przechodzi do `UNKNOWN`, bez zdarzenia sugerującego ruch pojazdu.
 - MQTT: retained `<base>/ble/<id>/state` i `<base>/ble/<id>/rssi`, `<base>/ble/<id>/last_seen_epoch` po poprawnym pomiarze czasu; eventy `<base>/ble/events` **non-retained** (tylko przejścia IN_RANGE/NOT_IN_RANGE po uzyskaniu stanu początkowego).
-- Osobne encje HA MQTT Discovery dla stanu i RSSI każdego ID; wspólne urządzenie ESP32.
+- Osobne encje HA MQTT Discovery dla stanu i RSSI każdego ID; wspólne urządzenie ESP32. Niewielka lista ogłoszonych ID jest zapamiętywana w LittleFS i umożliwia czyszczenie usuniętych discovery oraz retained state/RSSI/timestamp po restarcie (do potwierdzenia w integracji).
 - Brak automatycznych odczytów PID/ECU: te należą do późniejszego kontraktu `poll_data(adapter_id)`.
 
 ## Konfiguracja — przykład (nie zawiera sekretów)
@@ -51,11 +51,11 @@ Adresy MAC w przykładzie są **fikcyjne**. Walidacja odrzuca niepoprawne ID/MAC
 
 ## Znane ograniczenia i ryzyka M1
 
-1. **Brak zweryfikowanej kompilacji i testów hardware.** Workflow GitHub Actions `.github/workflows/platformio-build.yml` został dodany, ale status należy potwierdzić w PR (może wymagać włączenia Actions).
+1. **Brak zweryfikowanej kompilacji i testów hardware.** Workflow GitHub Actions `.github/workflows/platformio-build.yml` został dodany, ale nie potwierdzono jego uruchomienia. Testy na hoście (`g++` C++11) dla samego automatu stanów zakończyły się powodzeniem; nie dowodzi to kompilacji firmware.
 2. Obecny odczyt RSSI jest próbką z listy wyników skanowania, a nie pełnym strumieniem reklam. Brak trendów i ich heurystyk po stronie ESP.
 3. Nieregularne reklamy i skanowanie 4 s / 30 s mogą wymagać kalibracji. Nieobecność reklamy nie dowodzi odjazdu; `NOT_IN_RANGE` to tylko niewykrywalność.
 4. Urządzenia z rotującym MAC i bez stabilnego identyfikatora reklam nie są obsługiwane.
-5. **Usuwanie discovery po zimnym restarcie** wymaga testu i prawdopodobnie trwałej listy poprzednio ogłoszonych ID; aktualna lista ogłoszonych ID istnieje tylko w RAM.
+5. **Usuwanie discovery po zimnym restarcie** otrzymało trwały indeks `/ble_ha_discovery_ids.json` w LittleFS. Nadal wymagany jest test na HA z usunięciem urządzenia, utratą MQTT i restartem ESP32; zmiany `mqttBase` lub prefiksu Discovery mogą wymagać osobnej procedury migracji.
 6. Niezmierzone obciążenie BLE/Wi-Fi/heap. Trzeba sprawdzić wpływ na istniejący Poller oraz jego watchdog.
 7. Rejestr BLE nie daje jeszcze interfejsu poleceń HA, wielu profili ELM ani funkcji `poll_data(adapter_id)`. Następny etap M2.
 
@@ -67,5 +67,7 @@ Nie wgrywać na produkcję w fazie WIP. Przed próbą na urządzeniu testowym za
 
 - Odczytano aktualne pliki gałęzi `main`, w tym `README.md`, `platformio.ini`, `src/elm_ble.cpp`, `src/poller.cpp`, `src/mqtt_ha.cpp` i konfigurację. W katalogu głównym brak `AGENTS.md`.
 - Dodano kod M1 i kontrolny workflow na osobnej gałęzi, Draft PR #2.
+- Wprowadzono wydzielony `src/ble_presence_state.h` i `test/native/ble_presence_state_test.cpp`; **lokalnie uruchomiono** `g++ -std=c++11 -Wall -Wextra -Werror -Isrc ... && /tmp/ble_presence_state_test` — **PASS**, wynik 0. To tylko test logiki stanów, nie firmware/NimBLE.
+- Dodano test C++11 do workflow oraz poprawiono obsługę `UNKNOWN` przy nieaktualnym skanowaniu i trwałe czyszczenie MQTT Discovery.
 - Brak dostępu do działającego środowiska PlatformIO i do bezpośredniego klonowania repo w kontenerze; do momentu przejścia GitHub Actions kompilacja jest niepotwierdzona.
 - Nie wykonano testów sprzętu, OTA, merge ani wdrożenia.
