@@ -59,20 +59,20 @@ Adresy MAC w przykładzie są **fikcyjne**. Walidacja odrzuca niepoprawne ID/MAC
 6. Niezmierzone obciążenie BLE/Wi-Fi/heap. Trzeba sprawdzić wpływ na istniejący Poller oraz jego watchdog.
 7. Rejestr BLE nie daje jeszcze interfejsu poleceń HA, wielu profili ELM ani funkcji `poll_data(adapter_id)`. Następny etap M2.
 
-## Bramki przed pierwszym OTA na jedynym ESP32
+## Bramki i przebieg pierwszego OTA na jedynym ESP32
 
-**Przygotowano kod, ale nie uruchamiano firmware na fizycznym ESP32.** Backup JSON po stronie użytkownika ma `type=obd2mqtt-backup`, `format=1`, `fw=0.3.24`, `with_secrets=true`; cztery profile, w tym Nissan. Aktywny zapisany profil: `ioniq5`. Pliku nie wgrywano do repo ani nie analizowano jego sekretów.
+**Aktualizacja OTA M1 została wykonana samodzielnie przez użytkownika 20.11.2026 na jedynym ESP32; to wstępny test uruchomienia, nie pełna walidacja BLE, MQTT i stabilności.** Backup JSON po stronie użytkownika ma `type=obd2mqtt-backup`, `format=1`, `fw=0.3.24`, `with_secrets=true`; cztery profile, w tym Nissan. Aktywny zapisany profil: `ioniq5`. Pliku nie wgrywano do repo ani nie analizowano jego sekretów.
 
 - `LittleFS.begin(false)` nie formatuje pamięci po błędzie montowania; przy braku zamontowanego FS lub poprawnie odczytanej konfiguracji firmware uruchamia dostęp ratunkowy, ale **nie inicjuje sesji OBD** ani migracji profili. `GET /api/status` ujawnia `fs_mounted`.
 - Oznaczenie wersji: `0.3.24-m1-test`, aby odróżnić nowy build od działającej `0.3.24`. `deviceId()`, `mqttBase`, `haPrefix`, istniejące `unique_id` pozostawiono bez zmian.
 - CI udostępnia dwa obrazy OTA dla `esp32dev`: **testowy M1** z obecnego commita i **rollback zbudowany ze źródeł** `main@f830e845...`. Oba mają manifest SHA-256 i informacje o pochodzeniu. Rollback **nie jest potwierdzony jako identyczny** z firmware zainstalowanym na urządzeniu.
-- Przed instalacją należy pobrać **obydwa** artefakty do prywatnego katalogu Windows i porównać SHA-256 z plikami manifestu. Artifacty GitHub Actions mają określony czas retencji; nie mogą być jedyną kopią.
+- Użytkownik potwierdził pobranie obu artefaktów ZIP. **Tylko M1** ma potwierdzoną sumę SHA-256 zgodną z manifestem: `d23361f5b02888d689bdefa2e54f7407842bcf2cc570f22b7389c1780a5c75c1`. Suma obrazu rollback pozostaje niezweryfikowana po stronie użytkownika. Artifacty GitHub Actions mają określony czas retencji; nie mogą być jedyną kopią.
 - Pełen zrzut flash uzyskany wcześniej przez użytkownika **nie przeszedł porównania pierwszych 64 KiB**; nie jest podstawą rollback. Użytkownik zdecydował zakończyć tę metodę.
-- Brak automatycznych aktualizacji, merge lub zmian w HA. Do firmware potrzebna odrębna decyzja użytkownika i testy T02–T14.
+- Użytkownik wydał polecenie OTA i potwierdził uruchomienie nowej wersji. Nie było automatycznego flashowania, merge, ani zmian w HA wykonywanych przez asystenta. Pozostały testy T02–T14.
 
 ## Rollback
 
-Nie wgrywać na produkcję w fazie WIP. Przed próbą na urządzeniu testowym zachować aktualny firmware v0.3.24, kopię konfiguracji/profili (bez commitowania sekretów) i wynik odczytu statusu. W przypadku błędu powrócić do uprzednio działającego firmware, z wyłączoną nową funkcją. Żadnych automatycznych aktualizacji/flashowania z CI.
+Użytkownik zainstalował M1 przez OTA na jedynym ESP32, korzystając z poprawnie zweryfikowanego obrazu M1. Zachował JSON backup i pobrał ZIP rollback v0.3.24; checksum rollback nie został jeszcze potwierdzony. W razie regresji rozważyć OTA rollback i odtworzenie JSON, pamiętając, że fallback zbudowano ze źródeł, a nie zrzutu uruchomionego wcześniej urządzenia. Żadnych automatycznych aktualizacji/flashowania z CI.
 
 ## Raport na dzień opracowania
 
@@ -82,4 +82,25 @@ Nie wgrywać na produkcję w fazie WIP. Przed próbą na urządzeniu testowym za
 - Dodano test C++11 do workflow oraz poprawiono obsługę `UNKNOWN` przy nieaktualnym skanowaniu i trwałe czyszczenie MQTT Discovery.
 - Lokalny kontener nie ma PlatformIO ani dostępu sieciowego do klonowania repo, ale GitHub Actions skompilował firmware. **Run:** `44766236911`, dla commita `e2fd16d2c726f3ae711ddebb28110183a1c99bd6`: `native-presence-state=success`, `esp32dev=success`, `esp32c3=success`, `esp32s3=success`.
 - Raport rozmiarów z kompilacji: `esp32dev` RAM 60 256 B (18,4% przydzielonej pamięci statycznej), Flash 1 578 405 B (80,3% limitu aplikacji); `esp32c3` RAM 49 644 B (15,2%), Flash 1 510 888 B (76,8%); `esp32s3` RAM 55 500 B (16,9%), Flash 1 472 321 B (74,9%). **To statyczna metryka builda, nie pomiar wolnego heap podczas działania.**
-- Nie wykonano testów sprzętu/HA, OTA, merge ani wdrożenia; przed aktywacją wymagane T02–T14.
+- OTA zostało wykonane przez użytkownika 20.11.2026, po wcześniej udanym CI run `44781533031` (test natywny i 3 kompilacje; dodatkowo build rollback). Nadal **nie wykonano** testów BLE Presence, MQTT/HA, zasypiania Vgate, stresowych ani testu przywrócenia rollback. PR nie został scalony; wymagane T02–T14.
+
+
+## Wynik pierwszego uruchomienia sprzętowego po OTA — 20.11.2026
+
+**Źródło pomiaru:** wartości przepisane przez użytkownika z panelu *System* po ręcznie wykonanym OTA, nie odczytane przez asystenta z urządzenia.
+
+| Parametr | Wynik |
+|---|---|
+| Firmware | `0.3.24-m1-test` |
+| Restart | Software restart |
+| Uptime w chwili odczytu | 50 s |
+| Heap wolny | 89 KB |
+| Minimalny heap | 73 KB |
+| Największy blok heap | 68 KB |
+| LittleFS | 64 / 128 KB |
+| Poll cycles | 0 |
+| Sieć | DHCP; panel WWW dostępny |
+
+**Ocena:** firmware uruchomiło się po OTA i udostępniło panel. To potwierdza wstępny sukces boot/OTA, **nie** poprawność pracy PID/OBD/BLE, zachowanie encji MQTT i stabilność długoterminową. Brakuje jawnego odczytu `fs_mounted` z `GET /api/status`; widoczne wartości LittleFS sugerują zamontowany filesystem, ale wymagamy potwierdzenia. Nie publikujemy lokalnego adresu IP ani innych detali sieci użytkownika w repo.
+
+**Kolejne kroki weryfikacyjne:** sprawdzić `fs_mounted` i status MQTT w `GET /api/status`; potwierdzić w HA, że to samo urządzenie i dotychczasowe encje pozostały dostępne; sprawdzić profil i `poll_enabled`; dopiero potem włączać rejestr BLE. Powtórzyć odczyt heap po dłuższym czasie; nie interpretować 50 s pracy jako test stabilności.
