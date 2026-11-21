@@ -22,6 +22,7 @@ static std::vector<String> announcedBle; // persisted to permit cleanup after re
 static const char* bleDiscoveryCache = "/ble_ha_discovery_ids.json";
 static String lastPollRequestId;  // bounded duplicate guard; stale commands rejected by timestamp
 static String pendingPollAckJson; // publish only AFTER PubSubClient::loop() callback returns
+static String vehicleContext;     // only set while a non-default adapter is polled
 
 static void loadAnnouncedBle() {
   File f = LittleFS.open(bleDiscoveryCache, "r");
@@ -57,6 +58,10 @@ String deviceId() {
 }
 
 static String topic(const String& sub) { return cfg.mqttBase + "/" + sub; }
+static String telemetryTopic(const String& sub) {
+  return topic(vehicleContext.length() ? "vehicles/" + vehicleContext + "/" + sub : sub);
+}
+void setVehicleContext(const String& adapterId) { vehicleContext = adapterId; }
 
 static void addDevice(JsonDocument& d) {
   JsonObject dev = d["device"].to<JsonObject>();
@@ -340,12 +345,12 @@ void loop() {
 
 void publishValue(const String& id, double v, int precision) {
   if (!mqtt.connected()) return;
-  mqtt.publish(topic(id).c_str(), String(v, precision).c_str(), true);
+  mqtt.publish(telemetryTopic(id).c_str(), String(v, precision).c_str(), true);
 }
 
 void publishText(const String& sub, const String& v, bool retain) {
   if (!mqtt.connected()) return;
-  mqtt.publish(topic(sub).c_str(), v.c_str(), retain);
+  mqtt.publish(telemetryTopic(sub).c_str(), v.c_str(), retain);
 }
 
 }  // namespace MqttHa
