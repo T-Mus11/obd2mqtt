@@ -965,7 +965,8 @@ static void applyPendingConfig() {
     nextConnectTry = 0;
   }
   if (before.profile != cfg.profile) reloadProfile();
-  if (before.deviceName != cfg.deviceName || before.lang != cfg.lang) MqttHa::requestDiscovery();
+  if (before.deviceName != cfg.deviceName || before.lang != cfg.lang ||
+      d["obd_adapters"].is<JsonArrayConst>()) MqttHa::requestDiscovery();
   // WLAN/MQTT-Änderungen werden durch Neustart aus der Web-UI wirksam
 }
 
