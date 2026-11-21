@@ -48,3 +48,11 @@ Wtedy przy sesji tego **rejestrowego** adaptera:
 - Test fizyczny: widoczność w HA, reconnect brokera i rotacja nonce bez replay, persistent status, skan MAC, `guard/ignore`, brak wysyłania ATRV na trybie ignore, bezpieczeństwo przy braku auta, reset ECU i odzyskiwanie, heap/WDT.
 - Istniejące niewyjaśnione zachowanie Vgate przy pomiarze 12 V pozostaje faktem. Nie zakładamy stałego offsetu 1 V i nie implementujemy korekcji napięcia.
 - Dla poprzednio utworzonego prywatnego PR #3 w `home-assistant-polska` nowa ścieżka **zastępuje pomysł odrębnego skryptu**, ale nie wykonuje zmian w tamtym repo ani w HA.
+
+## Wyniki CI — 21 listopada 2026
+
+- **Kod skompilowany z commita:** `b7b2192fb9b45dc88ac3d227c5b8948af0d7ed4a`.
+- [GitHub Actions #44911864676](https://github.com/T-Mus11/obd2mqtt/actions/runs/44911864676): `completed / success` — 5 zadań PASS: `native-presence-state` (testy rejestru/UI i kontraktu przycisku/ATRV/nonce), `build (esp32dev)`, `build (esp32s3)`, `build (esp32c3)`, `rollback-v0324`.
+- ESP32-WROOM-32D: RAM statyczny `60632/327680 B = 18,5%`; flash aplikacji `1612273/1966080 B = 82,0%`. To **nie** heap ani zużycie RAM w runtime.
+- [Pakiet OTA](https://github.com/T-Mus11/obd2mqtt/actions/runs/44911864676/artifacts/14710191782): `obd2mqtt-v0.3.24-m2d-test-esp32dev-ota.bin`, `SHA256SUMS-m2d.txt`, `M2D-SOURCE.txt`.
+- Test na fizycznym ESP32 z MQTT/HA i ECU **nie został wykonany**. Stara wersja `0.3.24-m2c-test` nadal pracuje na sprzęcie do czasu odrębnej aktualizacji.
