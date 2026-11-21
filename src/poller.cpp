@@ -827,6 +827,7 @@ struct MqttAdapterSession {
   uint32_t savedNextConnectTry = 0;
   uint32_t savedLastSleepPoll = 0;
   bool savedCarAsleep = false;
+  bool savedElmQuiet = false;
   bool active = false;
 };
 
@@ -863,6 +864,8 @@ static bool beginAdapterSession(const ObdAdapterConfig& target, MqttAdapterSessi
   saved.savedNextConnectTry = nextConnectTry;
   saved.savedLastSleepPoll = lastSleepPoll;
   saved.savedCarAsleep = carAsleep;
+  saved.savedElmQuiet = ElmBle::quiet;
+  ElmBle::quiet = false;
   lastVoltage = NAN;
   lastError = "";
   nextConnectTry = 0;
@@ -894,6 +897,7 @@ static void endAdapterSession(MqttAdapterSession& saved) {
   nextConnectTry = saved.savedNextConnectTry;
   lastSleepPoll = saved.savedLastSleepPoll;
   carAsleep = saved.savedCarAsleep;
+  ElmBle::quiet = saved.savedElmQuiet;
   elmReady = false;
   currentHeader = "";
   needWarmup = false;
