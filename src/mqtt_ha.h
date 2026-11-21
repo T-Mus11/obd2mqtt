@@ -12,5 +12,6 @@ void publishText(const String& sub, const String& v, bool retain = true);
 // During a non-legacy adapter session, publish PID/status telemetry under
 // <base>/vehicles/<adapter_id>/... to prevent cross-vehicle HA state corruption.
 void setVehicleContext(const String& adapterId);
+void publishAdapterPollResult(const String& adapterId, const String& payload, const String& status); // scoped HA diagnostic sensors
 void publishProfile();             // <base>/profile + <base>/profile/attributes
 }
