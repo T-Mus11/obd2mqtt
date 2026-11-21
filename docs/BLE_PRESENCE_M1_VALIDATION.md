@@ -118,3 +118,33 @@ Użytkownik aktywował skaner BLE dla adaptera Nissan, pozostawiając `poll_enab
 **Brak potwierdzenia** stanu encji presence, faktycznych rekordów w bazie Recorder, pełnej stabilności skanowania i wykrycia adaptera po jego powrocie. Użytkownik pozostawił urządzenie na obserwacji. Nie wykonywano zmian na HA ani ESP32.
 
 Dokumentacja zachowania Recorder: https://www.home-assistant.io/integrations/recorder/ ; https://www.home-assistant.io/integrations/history/ .
+
+## Odczyt stabilności sprzętowej M1 — 21.11.2026, 07:09 CET
+
+**Źródło:** pełny `/api/status` przekazany przez użytkownika, nie niezależny odczyt po sieci. Bez zapisu SSID, IP, MAC ani adresu brokera.
+
+| Parametr | Obserwacja |
+|---|---|
+| Firmware | `0.3.24-m1-test` |
+| Uptime | `44306 s` = **12 h 18 min 26 s**, od uruchomienia bez zgłoszonego kolejnego restartu |
+| Heap wolny / minimalny / największy blok | `84840 B` / `46860 B` / `65524 B` |
+| LittleFS | Zamontowany; `69632/131072 B` |
+| Wi-Fi i MQTT | Połączone |
+| Reset reason / safe mode / hang step | `Power on` / `false` / pusty |
+| BLE drops | `0` |
+| Auto-poll | `false` (wyłączony po krótkim teście) |
+| Zapisane cykle PID | `1` |
+| Profil aktywny | ID `ioniq5`, **nazwa wyświetlana Nissan Qashqai J10 1.6 HR16DE** |
+| Ostatnia próba | 20.11 20:12:51–20:12:56; BLE połączone, potem planowo rozłączone |
+| Napięcie `ATRV` | `11.8 V`, poniżej progu ostrzeżenia `12.0 V` |
+| ECU | `CAN ERROR` na `010C`, następnie `NO DATA` dla aktywnych PID; brak poprawnego wyniku ECU |
+
+**Wnioski ograniczone do tego pomiaru:**
+1. Boot, montowanie systemu plików, łączność sieciowa, ścieżka MQTT i stabilność uruchomionego firmware przez ponad 12 h mają pozytywne świadectwo. Brak restartu/WDT/BLE drops w udostępnionym wycinku. `heap_min=46860 B` wymaga dalszego monitorowania przy aktywnym skanowaniu i większej liście tagów; sam pomiar nie jest testem obciążeniowym.
+2. Poprawne połączenie BLE z Vgate jest zaobserwowane, **komunikacja z ECU jeszcze nie**. Ponieważ zapłon nie był potwierdzony jako włączony, `NO DATA` nie stanowi dowodu awarii ECU. Nie można jednak policzyć żadnego poprawnego PID ani przyjąć braku DTC.
+3. **11.8 V odczytu adaptera jest sygnałem ostrzegawczym, nie dokładnym pomiarem akumulatora.** `ATRV` może być obarczony offsetem; przed celowym, długim testem trzeba porównać z multimetrem przy akumulatorze / zaciskach, sprawdzić realny `minVoltage` i nie obchodzić ochrony przez `force`. Nie włączać 10-minutowego agresywnego pollingu wyłącznie na podstawie tej obserwacji.
+4. Historyczne ID profilu `ioniq5` ma aktualnie nazwę Nissan. Przed szerszym rozwijaniem API wielopojazdowego należy uporządkować tożsamość profili/adapters i nie wyciągać wniosków z samego ID.
+5. Nie ma w przekazanym statusie historii przejść stanów BLE Presence. Konieczne są odczyty encji `UNKNOWN/IN_RANGE/NOT_IN_RANGE` oraz rzeczywistej telemetrii RSSI z HA/MQTT — samo `ble.connected=false` nie mówi, czy tag był skanowany.
+
+**Następne bramki M1/M2:** kontrola battery 12 V i progów bezpieczeństwa (T14), stanów tagów/MQTT Discovery (T04–T10), porównanie heap po 24–48 h przy BLE Presence, test ECU z zapłonem włączonym przy bezpiecznym napięciu, potem M2a publiczne jednorazowe `poll_data` sterowane z HA na osobnej gałęzi. Brak OTA, zmian HA i aktualizacji konfiguracji podczas tego odczytu.
+
