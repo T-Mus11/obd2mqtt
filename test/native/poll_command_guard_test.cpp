@@ -8,7 +8,7 @@ int main() {
   using PollCommandGuard::validRequestId;
   using PollCommandGuard::freshTimestamp;
 
-  assert(validRequestId("ha_20261121_001", 14));
+  assert(validRequestId("ha_20261121_001", std::strlen("ha_20261121_001")));
   const char* uuid = "123e4567-e89b-12d3-a456-426614174000";
   assert(validRequestId(uuid, std::strlen(uuid)));
   assert(!validRequestId("", 0));
