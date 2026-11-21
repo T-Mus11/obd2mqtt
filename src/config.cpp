@@ -1,4 +1,6 @@
 #include "config.h"
+#include "obd_adapter_registry.h"
+#include <utility>
 #include <LittleFS.h>
 #include "default_profiles.h"
 #include "i18n.h"
@@ -240,6 +242,17 @@ void configToJson(JsonDocument& d, bool mask) {
     JsonObject o = bleDevices.add<JsonObject>();
     o["id"] = device.id; o["mac"] = device.mac; o["name"] = device.name;
   }
+  JsonArray adapters = d["obd_adapters"].to<JsonArray>();
+  for (const auto& adapter : cfg.obdAdapters) {
+    JsonObject o = adapters.add<JsonObject>();
+    o["id"] = adapter.id;
+    o["vehicle_id"] = adapter.vehicleId;
+    o["mac"] = adapter.mac;
+    o["profile_id"] = adapter.profileId;
+    o["protocol"] = adapter.protocol;
+    o["addr_type"] = adapter.addrType;
+    o["enabled"] = adapter.enabled;
+  }
   d["profile"] = cfg.profile;
   d["poll_enabled"] = cfg.pollEnabled;
   d["min_voltage"] = cfg.minVoltage;
@@ -318,6 +331,41 @@ void configFromJson(JsonVariantConst s) {
       if (!duplicate) next.push_back(d);
     }
     cfg.blePresenceDevices.swap(next);
+  }
+  // Transactional parsing: a malformed registry must NOT erase the last working mapping.
+  if (s["obd_adapters"].is<JsonArrayConst>()) {
+    const JsonArrayConst arr = s["obd_adapters"].as<JsonArrayConst>();
+    std::vector<ObdAdapterConfig> next;
+    bool valid = arr.size() <= 4;
+    for (JsonVariantConst o : arr) {
+      if (!valid) break;
+      if (!o.is<JsonObjectConst>() || !o["id"].is<const char*>() ||
+          !o["vehicle_id"].is<const char*>() || !o["mac"].is<const char*>() ||
+          !o["profile_id"].is<const char*>()) { valid = false; break; }
+      ObdAdapterConfig a;
+      a.id = o["id"].as<String>(); a.id.trim(); a.id.toLowerCase();
+      a.vehicleId = o["vehicle_id"].as<String>(); a.vehicleId.trim(); a.vehicleId.toLowerCase();
+      a.mac = o["mac"].as<String>(); a.mac.trim(); a.mac.toUpperCase();
+      a.profileId = o["profile_id"].as<String>(); a.profileId.trim();
+      a.protocol = o["protocol"].is<const char*>() ? o["protocol"].as<String>() : String("profile");
+      a.protocol.trim();
+      if (a.protocol.length() == 1) a.protocol.toUpperCase();
+      else a.protocol.toLowerCase();
+      a.addrType = o["addr_type"].is<const char*>() ? o["addr_type"].as<String>() : String("auto");
+      a.addrType.trim(); a.addrType.toLowerCase();
+      a.enabled = o["enabled"].is<bool>() ? o["enabled"].as<bool>() : true;
+      if (!ObdAdapterRegistry::validId(a.id.c_str()) || a.id == "current" ||
+          !ObdAdapterRegistry::validId(a.vehicleId.c_str()) ||
+          !ObdAdapterRegistry::validMac(a.mac.c_str()) ||
+          !validProfileName(a.profileId) ||
+          !ObdAdapterRegistry::validProtocol(a.protocol.c_str()) ||
+          !ObdAdapterRegistry::validAddressType(a.addrType.c_str())) { valid = false; break; }
+      for (const auto& p : next)
+        if (p.id == a.id || p.vehicleId == a.vehicleId || p.mac == a.mac) { valid = false; break; }
+      if (valid) next.push_back(a);
+    }
+    if (valid) cfg.obdAdapters.swap(next);
+    else logf("OBD adapter registry invalid; existing registry retained (max 4, unique ID/MAC/vehicle, valid profile/protocol required)");
   }
   str("profile", cfg.profile);
   if (s["poll_enabled"].is<bool>()) cfg.pollEnabled = s["poll_enabled"];
@@ -444,13 +492,19 @@ String readProfileRaw(const String& name) {
   return s;
 }
 
-bool loadProfile(const String& name) {
+bool loadProfileInto(const String& name, Profile& out) {
   String raw = readProfileRaw(name);
   if (raw.isEmpty()) return false;
   JsonDocument d;
   if (deserializeJson(d, raw)) return false;
   String err;
-  if (!parseProfile(d.as<JsonVariantConst>(), profile, err)) return false;
+  return parseProfile(d.as<JsonVariantConst>(), out, err);
+}
+
+bool loadProfile(const String& name) {
+  Profile next;
+  if (!loadProfileInto(name, next)) return false;
+  profile = std::move(next);
   ObdParse::setBattery(profile.batteryKwh, profile.consumption);
   return true;
 }

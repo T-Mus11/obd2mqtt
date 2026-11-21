@@ -10,6 +10,10 @@ struct ScanEntry { String mac, name; int rssi; bool addrRandom; bool likelyObd; 
 void begin();
 bool connect(String& err);          // nutzt cfg.bleMac / UUIDs (oder Auto-Erkennung)
 void disconnect();
+// Explicit, short-lived target for a manual multi-adapter MQTT session.
+// Keeps legacy cfg.bleMac/UUID/PIN unchanged and disconnects on every switch.
+void setSessionTarget(const String& mac, const String& addrType);
+void clearSessionTarget();
 extern volatile bool quiet;         // true = Verbinden/Trennen nicht loggen (Auto schläft, Prüfung jede Minute)
 bool connected();
 uint32_t dropCount();               // Zähler ungeplanter Verbindungsabbrüche

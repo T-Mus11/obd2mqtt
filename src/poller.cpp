@@ -4,6 +4,7 @@
 #include "poller.h"
 #include <WiFi.h>
 #include <vector>
+#include <utility>
 #include "config.h"
 #include "elm_ble.h"
 #include "log.h"
@@ -46,6 +47,9 @@ static volatile bool flagProfileReload = false;
 static volatile bool flagPollNow = false;
 // M2a: at most one explicit MQTT request for the currently configured adapter.
 static String pendingMqttRequestId;
+static String pendingMqttAdapterId;
+static ObdAdapterConfig pendingMqttAdapter;
+static String activeMqttProfileId;
 static bool mqttVoltageUnavailable = false; // fresh ATRV must succeed before MQTT forced PID reads
 static String pendingConfig;          // unter mtx
 
@@ -137,6 +141,15 @@ static bool ensureReady(String& err) {
       if (!ok) logf(T("Init '%s' ohne Prompt (Antwort: %s)", "Init '%s' without prompt (response: %s)"), c.c_str(), oneLine(r).c_str());
       else if (rejected(r)) logf(T("Init '%s' vom Dongle abgelehnt (Antwort: %s)", "Init '%s' rejected by the dongle (response: %s)"), c.c_str(), oneLine(r).c_str());
       else if (dbg) logf("[diag] %s → %s", c.c_str(), oneLine(r, 60).c_str());
+      // An explicit per-adapter ATSP setting is mandatory: never silently
+      // continue on a previous/auto-selected protocol if ELM rejected it.
+      if (activeMqttProfileId.length() && pendingMqttAdapter.protocol != "profile") {
+        String cmd = c; cmd.trim(); cmd.toUpperCase();
+        if (cmd.startsWith("ATSP") && (!ok || rejected(r) || r.indexOf("OK") < 0)) {
+          err = "ELM rejected configured protocol " + pendingMqttAdapter.protocol;
+          return false;
+        }
+      }
       if (c.startsWith("ATZ")) delay(300);
     }
     currentHeader = "";
@@ -266,7 +279,7 @@ static uint32_t msUntilNextDue(uint32_t now) {
 static void publishStateJson() {
   JsonDocument d;
   d["profile"] = profile.name.length() ? profile.name : cfg.profile;
-  d["profile_id"] = cfg.profile;
+  d["profile_id"] = activeMqttProfileId.length() ? activeMqttProfileId : cfg.profile;
   if (timeValid()) {
     time_t tnow = time(nullptr);
     struct tm tmv;
@@ -781,19 +794,125 @@ String lastErrorText() {
 
 void requestPollNow() { flagPollNow = true; forcePoll = true; }
 
-bool requestMqttPoll(const String& requestId) {
-  if (isPaused()) return false;
+String requestMqttPoll(const String& requestId, const String& adapterId) {
+  if (isPaused()) return "busy_or_unsafe";
   std::lock_guard<std::mutex> lk(mtx);
-  // Never silently enable legacy auto-poll or bypass the configured 12 V safety guard.
-  if (cfg.pollEnabled || cfg.bleMac.isEmpty() || cfg.minVoltage < 12.0f ||
-      pendingMqttRequestId.length() || job.state == "pending" || job.state == "running") return false;
+  if (cfg.pollEnabled || cfg.minVoltage < 12.0f || pendingMqttRequestId.length() ||
+      job.state == "pending" || job.state == "running") return "busy_or_unsafe";
+
+  ObdAdapterConfig target;
+  if (adapterId == "current") {
+    if (cfg.bleMac.isEmpty()) return "unknown_adapter";
+  } else {
+    bool found = false;
+    for (const auto& a : cfg.obdAdapters) {
+      if (a.id == adapterId && a.enabled) { target = a; found = true; break; }
+    }
+    if (!found) return "unknown_adapter";
+  }
+
+  Profile selected;
+  if (adapterId == "current") selected = profile;
+  else if (!loadProfileInto(target.profileId, selected)) return "invalid_profile";
   bool hasEnabledPid = false;
-  for (const auto& p : profile.pids) if (p.enabled) { hasEnabledPid = true; break; }
-  if (!hasEnabledPid) return false;
+  for (const auto& p : selected.pids) if (p.enabled) { hasEnabledPid = true; break; }
+  if (!hasEnabledPid) return "empty_profile";
+
   pendingMqttRequestId = requestId;
+  pendingMqttAdapterId = adapterId;
+  pendingMqttAdapter = target;
   flagPollNow = true;
-  forcePoll = true;  // Intentional user command may wake ECU; voltage guard in pollDue() still applies.
+  forcePoll = true; // Intentional manual command, but fresh ATRV and voltage guard still apply.
+  return "accepted";
+}
+
+// A registry adapter temporarily uses its own profile/ELM protocol and BLE target.
+// Move the legacy vectors rather than copying them: ESP32 heap is limited.
+struct MqttAdapterSession {
+  Profile savedProfile;
+  std::vector<PidState> savedStates;
+  float savedVoltage = NAN;
+  String savedError;
+  uint32_t savedNextConnectTry = 0;
+  uint32_t savedLastSleepPoll = 0;
+  bool savedCarAsleep = false;
+  bool savedElmQuiet = false;
+  bool active = false;
+};
+
+static void applyAdapterProtocol(Profile& selected, const String& protocol) {
+  if (protocol == "profile") return;  // keep profile-specific initialization unchanged
+  const String desired = protocol == "auto" ? "ATSP0" : "ATSP" + protocol;
+  bool replaced = false;
+  for (auto& c : selected.init) {
+    String normalized = c;
+    normalized.trim();
+    normalized.toUpperCase();
+    if (normalized.startsWith("ATSP")) {
+      c = desired;
+      replaced = true;
+    }
+  }
+  if (!replaced) selected.init.push_back(desired);
+}
+
+static bool beginAdapterSession(const ObdAdapterConfig& target, MqttAdapterSession& saved) {
+  Profile selected;
+  if (!loadProfileInto(target.profileId, selected)) return false;
+  applyAdapterProtocol(selected, target.protocol);
+  ElmBle::setSessionTarget(target.mac, target.addrType); // disconnect old ELM; do not mutate cfg
+  {
+    std::lock_guard<std::mutex> lk(mtx);
+    saved.savedProfile = std::move(profile);
+    profile = std::move(selected);
+    saved.savedStates.swap(states);
+    states.assign(profile.pids.size(), PidState());
+    saved.savedVoltage = lastVoltage;
+    saved.savedError = lastError;
+  }
+  saved.savedNextConnectTry = nextConnectTry;
+  saved.savedLastSleepPoll = lastSleepPoll;
+  saved.savedCarAsleep = carAsleep;
+  saved.savedElmQuiet = ElmBle::quiet;
+  ElmBle::quiet = false;
+  lastVoltage = NAN;
+  lastError = "";
+  nextConnectTry = 0;
+  lastSleepPoll = 0;
+  carAsleep = false;
+  elmReady = false;
+  currentHeader = "";
+  needWarmup = false;
+  ObdParse::setBattery(profile.batteryKwh, profile.consumption);
+  activeMqttProfileId = target.profileId;
+  MqttHa::setVehicleContext(target.id);
+  saved.active = true;
   return true;
+}
+
+static void endAdapterSession(MqttAdapterSession& saved) {
+  if (!saved.active) return;
+  ElmBle::clearSessionTarget(); // always disconnect and clear any ELM/CAN state
+  MqttHa::publishText("car", "offline");  // scoped retained connectivity must not remain ON
+  MqttHa::setVehicleContext("");
+  {
+    std::lock_guard<std::mutex> lk(mtx);
+    profile = std::move(saved.savedProfile);
+    states.swap(saved.savedStates);
+    lastVoltage = saved.savedVoltage;
+    lastError = saved.savedError;
+  }
+  activeMqttProfileId = "";
+  nextConnectTry = saved.savedNextConnectTry;
+  lastSleepPoll = saved.savedLastSleepPoll;
+  carAsleep = saved.savedCarAsleep;
+  ElmBle::quiet = saved.savedElmQuiet;
+  elmReady = false;
+  currentHeader = "";
+  needWarmup = false;
+  ObdParse::setBattery(profile.batteryKwh, profile.consumption);
+  syncValues();
+  saved.active = false;
 }
 
 static volatile int pendingEnable = -1;
@@ -892,68 +1011,126 @@ void loop() {
     return;
   }
 
-  uint32_t now = millis();
+  String requestId, adapterId;
+  ObdAdapterConfig target;
+  {
+    std::lock_guard<std::mutex> lk(mtx);
+    requestId = pendingMqttRequestId;
+    adapterId = pendingMqttAdapterId;
+    target = pendingMqttAdapter;
+  }
+  const bool requested = requestId.length() > 0;
+  const bool alternate = requested && adapterId != "current";
   if (flagPollNow) {
     flagPollNow = false;
-    std::lock_guard<std::mutex> lk(mtx);
-    for (auto& s : states) s.lastPoll = 0;
+    // Explicit alternate-vehicle polls must not erase the legacy profile's PID state.
+    if (!alternate) {
+      std::lock_guard<std::mutex> lk(mtx);
+      for (auto& state : states) state.lastPoll = 0;
+    }
     nextConnectTry = 0;
   }
-  if (cfg.bleMac.isEmpty()) { updateCache(); return; }
 
-  uint32_t wait = msUntilNextDue(now);
-  if (wait == 0) {
-    if ((int32_t)(now - nextConnectTry) >= 0) {
-      String requestId;
+  MqttAdapterSession previous;
+  bool targetReady = true;
+  if (requested && cfg.pollEnabled) targetReady = false;
+  else if (alternate) targetReady = beginAdapterSession(target, previous);
+
+  if (requested && !targetReady) {
+    forcePoll = false;
+    {
+      std::lock_guard<std::mutex> lk(mtx);
+      pendingMqttRequestId = "";
+      pendingMqttAdapterId = "";
+    }
+    JsonDocument d;
+    d["request_id"] = requestId;
+    d["adapter_id"] = adapterId;
+    d["status"] = cfg.pollEnabled ? "cancelled_legacy_enabled" : "invalid_profile";
+    String json;
+    serializeJson(d, json);
+    MqttHa::publishText("command/poll_data/result", json, false);
+    updateCache();
+    return;
+  }
+
+  // The default device is left entirely untouched by the alternate-target path.
+  if (!alternate && cfg.bleMac.isEmpty()) {
+    if (requested) {
+      forcePoll = false;
+      std::lock_guard<std::mutex> lk(mtx);
+      pendingMqttRequestId = "";
+      pendingMqttAdapterId = "";
+    }
+    updateCache();
+    return;
+  }
+
+  uint32_t now = millis();
+  if (msUntilNextDue(now) == 0 && (int32_t)(now - nextConnectTry) >= 0) {
+    const uint32_t startedMs = millis();
+    if (requested) {
+      mqttVoltageUnavailable = false;
+      std::lock_guard<std::mutex> lk(mtx);
+      lastVoltage = NAN;  // a previous reading can never satisfy a new manual request
+    }
+    pollDue();  // fresh ATRV guard, then one complete pass through enabled profile PIDs
+    if (requested) forcePoll = false;  // also disarm when pollDue returns early
+
+    if (requested) {
+      const uint32_t elapsed = millis() - startedMs;
+      size_t enabled = 0, fresh = 0;
+      const float volts = lastVoltage;
+      const String err = lastError;
+      JsonDocument d;
+      d["request_id"] = requestId;
+      d["adapter_id"] = adapterId;
+      d["metrics"] = "full";
+      d["profile_id"] = alternate ? target.profileId : cfg.profile;
+      if (alternate) {
+        d["vehicle_id"] = target.vehicleId;
+        d["protocol"] = target.protocol;
+      }
+      d["duration_ms"] = elapsed;
+      JsonObject values = d["values"].to<JsonObject>();
+      for (size_t i = 0; i < profile.pids.size() && i < states.size(); i++) {
+        if (!profile.pids[i].enabled) continue;
+        ++enabled;
+        if (states[i].lastOk && (uint32_t)(states[i].lastOk - startedMs) <= elapsed) {
+          ++fresh;
+          values[profile.pids[i].id] = states[i].value;
+        }
+      }
+      d["pids_enabled"] = enabled;
+      d["pids_fresh"] = fresh;
+      if (!isnan(volts)) d["voltage_12v"] = volts;
+      if (err.length()) d["last_error"] = err.substring(0, 120);
+      d["status"] = mqttVoltageUnavailable ? "blocked_voltage_unknown"
+                    : ((!isnan(volts) && cfg.minVoltage > 0 && volts < cfg.minVoltage)
+                       ? "blocked_low_voltage"
+                       : (enabled > 0 && fresh == enabled ? "success"
+                          : (fresh > 0 ? "partial" : "no_ecu_response")));
+      String payload;
+      serializeJson(d, payload);
+      // PubSubClient uses a 1536 B packet buffer; per-PID retained topics still
+      // contain data when the optional inline snapshot is too large.
+      if (payload.length() > 1200) {
+        d.remove("values");
+        d["values_omitted"] = true;
+        payload = "";
+        serializeJson(d, payload);
+      }
+      endAdapterSession(previous);
       {
         std::lock_guard<std::mutex> lk(mtx);
-        requestId = pendingMqttRequestId;
+        pendingMqttRequestId = "";
+        pendingMqttAdapterId = "";
       }
-      uint32_t startedMs = millis();
-      if (requestId.length()) {
-        mqttVoltageUnavailable = false;
-        std::lock_guard<std::mutex> lk(mtx);
-        lastVoltage = NAN; // never classify a prior retained measurement as fresh voltage
-      }
-      pollDue();  // existing one-shot cycle: includes fresh ATRV low-voltage check
-      if (requestId.length()) forcePoll = false; // no deferred waking after an early return
-      if (requestId.length()) {
-        const uint32_t elapsed = millis() - startedMs;
-        size_t enabled = 0, fresh = 0;
-        float volts;
-        String err;
-        {
-          std::lock_guard<std::mutex> lk(mtx);
-          for (size_t i = 0; i < profile.pids.size() && i < states.size(); i++) {
-            if (!profile.pids[i].enabled) continue;
-            ++enabled;
-            // Unsigned arithmetic is rollover-safe for this bounded single cycle.
-            if (states[i].lastOk && (uint32_t)(states[i].lastOk - startedMs) <= elapsed) ++fresh;
-          }
-          volts = lastVoltage;
-          err = lastError;
-          pendingMqttRequestId = "";
-        }
-        JsonDocument d;
-        d["request_id"] = requestId;
-        d["adapter_id"] = "current"; // M2a targets only the currently configured OBD adapter
-        d["metrics"] = "full";
-        d["duration_ms"] = elapsed;
-        d["pids_enabled"] = enabled;
-        d["pids_fresh"] = fresh;
-        if (!isnan(volts)) d["voltage_12v"] = volts;
-        if (err.length()) d["last_error"] = err.substring(0, 120);
-        d["status"] = mqttVoltageUnavailable ? "blocked_voltage_unknown"
-                        : ((!isnan(volts) && cfg.minVoltage > 0 && volts < cfg.minVoltage)
-                           ? "blocked_low_voltage"
-                           : (enabled > 0 && fresh == enabled ? "success"
-                              : (fresh > 0 ? "partial" : "no_ecu_response")));
-        String payload;
-        serializeJson(d, payload);
-        MqttHa::publishText("command/poll_data/result", payload, false);
-      }
+      MqttHa::publishText("command/poll_data/result", payload, false);
     }
   }
+  // Never leave an alternate profile or MAC in effect even after an early skip.
+  if (previous.active) endAdapterSession(previous);
   if (ElmBle::connected() && !cfg.keepConnected && msUntilNextDue(millis()) > 20000) {
     bool jobBusy;
     {

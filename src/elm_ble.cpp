@@ -11,6 +11,15 @@ namespace ElmBle {
 
 volatile bool quiet = false;
 
+static bool sessionTargetActive = false;
+static String sessionMac, sessionAddrType;
+static bool savedRelaxed = false, savedPairLogged = false;
+static uint8_t savedFastDrops = 0;
+static const String emptyPin;
+static const String& activeMac() { return sessionTargetActive ? sessionMac : cfg.bleMac; }
+static const String& activeAddressType() { return sessionTargetActive ? sessionAddrType : cfg.bleAddrType; }
+static const String& activePin() { return sessionTargetActive ? emptyPin : cfg.blePin; }
+
 
 static NimBLEClient* client = nullptr;
 static NimBLERemoteCharacteristic* chrNotify = nullptr;
@@ -58,13 +67,13 @@ static void drain(uint32_t quietMs, uint32_t maxMs) {
 class ClientCb : public NimBLEClientCallbacks {
   // Kopplung mit PIN (z. B. WiCAN Pro: Passkey-Eingabe, verschlüsselte Verbindung)
   void onPassKeyEntry(NimBLEConnInfo& info) override {
-    if (cfg.blePin.isEmpty()) {
+    if (activePin().isEmpty()) {
       logf("%s", T("Dongle verlangt eine PIN – bitte unter Einstellungen → BLE-Dongle eintragen", "Dongle requires a PIN – please enter it under Settings → BLE dongle"));
       NimBLEDevice::injectPassKey(info, 0);
       return;
     }
     logf("%s", T("Dongle verlangt PIN – sende gespeicherte PIN", "Dongle requires PIN – sending stored PIN"));
-    NimBLEDevice::injectPassKey(info, (uint32_t)cfg.blePin.toInt());
+    NimBLEDevice::injectPassKey(info, (uint32_t)activePin().toInt());
   }
   void onConfirmPasskey(NimBLEConnInfo& info, uint32_t) override { NimBLEDevice::injectConfirmPasskey(info, true); }
   void onAuthenticationComplete(NimBLEConnInfo& info) override {
@@ -113,7 +122,7 @@ int rssi() {
 }
 uint16_t mtu() { return connected() ? client->getMTU() : 0; }
 String detectedUuids() { return uuidInfo; }
-String deviceName() { return devName.length() && nameMac == cfg.bleMac ? devName : cfg.bleName; }
+String deviceName() { return devName.length() && nameMac == activeMac() ? devName : (sessionTargetActive ? String() : cfg.bleName); }
 String dongleKind() { return kind; }
 
 void disconnect() {
@@ -123,6 +132,30 @@ void disconnect() {
   }
   client = nullptr;
   chrNotify = chrWrite = nullptr;
+}
+
+void setSessionTarget(const String& mac, const String& addrType) {
+  stopPresenceScan();
+  disconnect();
+  savedRelaxed = relaxed;
+  savedFastDrops = fastDrops;
+  savedPairLogged = pairLogged;
+  relaxed = false;
+  fastDrops = 0;
+  pairLogged = false;
+  sessionMac = mac;
+  sessionAddrType = addrType;
+  sessionTargetActive = true;
+}
+
+void clearSessionTarget() {
+  disconnect();
+  sessionTargetActive = false;
+  sessionMac = "";
+  sessionAddrType = "";
+  relaxed = savedRelaxed;
+  fastDrops = savedFastDrops;
+  pairLogged = savedPairLogged;
 }
 
 static bool isStdService(const NimBLEUUID& u) {
@@ -135,7 +168,7 @@ static bool isStdService(const NimBLEUUID& u) {
 static bool resolveCharacteristics(String& err) {
   chrNotify = chrWrite = nullptr;
 
-  if (cfg.bleService.length()) {
+  if (!sessionTargetActive && cfg.bleService.length()) {
     NimBLERemoteService* s = client->getService(NimBLEUUID(cfg.bleService.c_str()));
     if (!s) { err = "Service " + cfg.bleService + T(" nicht gefunden", " not found"); return false; }
     if (cfg.bleNotify.length()) chrNotify = s->getCharacteristic(NimBLEUUID(cfg.bleNotify.c_str()));
@@ -184,11 +217,11 @@ static bool resolveCharacteristics(String& err) {
 bool connect(String& err) {
   if (connected()) return true;
   stopPresenceScan();  // ELM connection takes priority over passive scans
-  if (cfg.bleMac.length() != 17) { err = T("Keine gültige BLE-MAC konfiguriert", "No valid BLE MAC configured"); return false; }
+  if (activeMac().length() != 17) { err = T("Keine gültige BLE-MAC konfiguriert", "No valid BLE MAC configured"); return false; }
   disconnect();
 
   // Sicherheit: mit PIN → Passkey-Eingabe (MITM, Secure Connections, Bonding); ohne PIN → "Just Works"
-  if (cfg.blePin.length()) {
+  if (activePin().length()) {
     NimBLEDevice::setSecurityAuth(true, true, true);
     NimBLEDevice::setSecurityIOCap(BLE_HS_IO_KEYBOARD_ONLY);
   } else {
@@ -205,8 +238,8 @@ bool connect(String& err) {
   else client->setConnectionParams(6, 12, 0, 400);
 
   std::vector<uint8_t> types;
-  if (cfg.bleAddrType == "public") types = {BLE_ADDR_PUBLIC};
-  else if (cfg.bleAddrType == "random") types = {BLE_ADDR_RANDOM};
+  if (activeAddressType() == "public") types = {BLE_ADDR_PUBLIC};
+  else if (activeAddressType() == "random") types = {BLE_ADDR_RANDOM};
   else types = {BLE_ADDR_PUBLIC, BLE_ADDR_RANDOM};
 
   // Jeder Schritt blockiert bis zu 30 s (BLE-Timeout). Damit der 60-s-Watchdog nicht zuschlägt:
@@ -230,7 +263,7 @@ bool connect(String& err) {
   bool ok = false;
   for (uint8_t t : types) {
     if (!step("BLE connect")) return fail();
-    NimBLEAddress addr(std::string(cfg.bleMac.c_str()), t);
+    NimBLEAddress addr(std::string(activeMac().c_str()), t);
     if (client->connect(addr)) { ok = true; break; }
   }
   if (!ok) { err = T("Dongle nicht erreichbar (Auto weg / Dongle schläft?)", "Dongle not reachable (car away / dongle asleep?)"); return fail(); }
@@ -240,7 +273,7 @@ bool connect(String& err) {
   if (!step("BLE services")) return fail();
   if (!resolveCharacteristics(err)) return fail();
 
-  if (!step(cfg.blePin.length() ? "BLE subscribe/pairing" : "BLE subscribe")) return fail();
+  if (!step(activePin().length() ? "BLE subscribe/pairing" : "BLE subscribe")) return fail();
   bool sub = chrNotify->canNotify() ? chrNotify->subscribe(true, onNotify)
                                     : chrNotify->subscribe(false, onNotify);
   if (!sub) {
@@ -253,7 +286,7 @@ bool connect(String& err) {
              chrNotify->getUUID().toString().c_str() + " / " + chrWrite->getUUID().toString().c_str();
   // Gerätenamen aus dem GAP-Service lesen (0x1800 / 0x2A00) – nicht jeder Dongle stellt ihn bereit.
   // Nur beim ersten Verbinden: spart bei jedem Neuaufbau eine weitere (blockierende) Leseanfrage.
-  if ((devName.isEmpty() || nameMac != cfg.bleMac) && step("BLE name")) {
+  if ((devName.isEmpty() || nameMac != activeMac()) && step("BLE name")) {
     NimBLEAttValue v = client->getValue(NimBLEUUID((uint16_t)0x1800), NimBLEUUID((uint16_t)0x2A00));
     String n;
     for (size_t i = 0; i < v.length() && i < 40; i++) {
@@ -261,7 +294,7 @@ bool connect(String& err) {
       if (c >= 32 && c < 127) n += c;
     }
     n.trim();
-    if (n.length()) { devName = n; nameMac = cfg.bleMac; }
+    if (n.length()) { devName = n; nameMac = activeMac(); }
   }
   // Typ grob anhand der Service-UUID
   {
@@ -280,7 +313,7 @@ bool connect(String& err) {
     int r = rssi();
     String rs = r ? String(r) + " dBm" : String(T("noch nicht gemessen", "not measured yet"));
     logf(T("BLE verbunden: %s (%s), RSSI %s, MTU %u, UUIDs %s%s", "BLE connected: %s (%s), RSSI %s, MTU %u, UUIDs %s%s"),
-         deviceName().length() ? deviceName().c_str() : cfg.bleMac.c_str(), kind.c_str(), rs.c_str(),
+         deviceName().length() ? deviceName().c_str() : activeMac().c_str(), kind.c_str(), rs.c_str(),
          (unsigned)client->getMTU(), uuidInfo.c_str(),
          relaxed ? T(", langsame Verbindungsparameter", ", slow connection parameters") : "");
   }
@@ -366,7 +399,7 @@ static std::vector<ScanEntry> collectResults(const NimBLEScanResults& res) {
       auto it = scanNames.find(d->getAddress().toString());
       if (it != scanNames.end()) e.name = it->second.c_str();
     }
-    if (e.name.isEmpty() && e.mac.equalsIgnoreCase(cfg.bleMac)) e.name = deviceName();
+    if (e.name.isEmpty() && e.mac.equalsIgnoreCase(activeMac())) e.name = deviceName();
     e.rssi = d->getRSSI();
     e.addrRandom = d->getAddress().getType() == BLE_ADDR_RANDOM;
     String n = e.name; n.toUpperCase();

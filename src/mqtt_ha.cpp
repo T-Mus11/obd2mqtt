@@ -9,6 +9,7 @@
 #include "i18n.h"
 #include "poller.h"
 #include "poll_command_guard.h"
+#include "obd_adapter_registry.h"
 #include "ble_presence.h"
 
 namespace MqttHa {
@@ -22,6 +23,7 @@ static std::vector<String> announcedBle; // persisted to permit cleanup after re
 static const char* bleDiscoveryCache = "/ble_ha_discovery_ids.json";
 static String lastPollRequestId;  // bounded duplicate guard; stale commands rejected by timestamp
 static String pendingPollAckJson; // publish only AFTER PubSubClient::loop() callback returns
+static String vehicleContext;     // only set while a non-default adapter is polled
 
 static void loadAnnouncedBle() {
   File f = LittleFS.open(bleDiscoveryCache, "r");
@@ -57,6 +59,10 @@ String deviceId() {
 }
 
 static String topic(const String& sub) { return cfg.mqttBase + "/" + sub; }
+static String telemetryTopic(const String& sub) {
+  return topic(vehicleContext.length() ? "vehicles/" + vehicleContext + "/" + sub : sub);
+}
+void setVehicleContext(const String& adapterId) { vehicleContext = adapterId; }
 
 static void addDevice(JsonDocument& d) {
   JsonObject dev = d["device"].to<JsonObject>();
@@ -272,10 +278,12 @@ static void onMessage(char* t, byte* payload, unsigned int len) {
     }
     const String id = d["request_id"] | "";
     if (!validPollId(id)) { publishPollAck("", "invalid_request_id"); return; }
-    // Explicit intent, one configured adapter and the currently active profile only.
+    // Explicit intent. M2b resolves adapter_id to a saved BLE + ECU profile mapping.
+    // Only full-profile, one-shot queries are supported; no user-supplied AT commands.
     const String adapter = d["adapter_id"] | "";
     const String metrics = d["metrics"] | "";
-    if (adapter != "current" || metrics != "full" || !d["force"].is<bool>() ||
+    if ((adapter != "current" && !ObdAdapterRegistry::validId(adapter.c_str())) ||
+        metrics != "full" || !d["force"].is<bool>() ||
         !d["force"].as<bool>()) { publishPollAck(id, "unsupported_scope"); return; }
     // Non-retained commands are required; an absolute time-to-live also rejects
     // old commands replayed at reconnect/reboot (PubSubClient does not expose retain).
@@ -286,7 +294,8 @@ static void onMessage(char* t, byte* payload, unsigned int len) {
       return;
     }
     if (lastPollRequestId == id) { publishPollAck(id, "duplicate"); return; }
-    if (!Poller::requestMqttPoll(id)) { publishPollAck(id, "busy_or_unsafe"); return; }
+    const String outcome = Poller::requestMqttPoll(id, adapter);
+    if (outcome != "accepted") { publishPollAck(id, outcome); return; }
     lastPollRequestId = id;
     publishPollAck(id, "accepted");
     return;
@@ -340,12 +349,12 @@ void loop() {
 
 void publishValue(const String& id, double v, int precision) {
   if (!mqtt.connected()) return;
-  mqtt.publish(topic(id).c_str(), String(v, precision).c_str(), true);
+  mqtt.publish(telemetryTopic(id).c_str(), String(v, precision).c_str(), true);
 }
 
 void publishText(const String& sub, const String& v, bool retain) {
   if (!mqtt.connected()) return;
-  mqtt.publish(topic(sub).c_str(), v.c_str(), retain);
+  mqtt.publish(telemetryTopic(sub).c_str(), v.c_str(), retain);
 }
 
 }  // namespace MqttHa
