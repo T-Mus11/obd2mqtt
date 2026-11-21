@@ -4,6 +4,7 @@
 #include <ArduinoJson.h>
 #include <time.h>
 #include <esp_system.h>
+#include <cstring>
 #include <LittleFS.h>
 #include "config.h"
 #include "log.h"
@@ -197,7 +198,7 @@ static void sendDiscovery() {
   } else { JsonDocument empty; publishConfig("binary_sensor", "battery_low", empty); }
   { // Hauptschalter Abfrage
     JsonDocument d;
-    d["name"] = T("Abfrage", "Polling");
+    d["name"] = T("Automatische Abfrage (alt)", "Auto polling (legacy)");
     d["state_topic"] = topic("polling");
     d["command_topic"] = topic("polling/set");
     d["payload_on"] = "ON";
