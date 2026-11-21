@@ -8,6 +8,7 @@
 #include "log.h"
 #include "i18n.h"
 #include "poller.h"
+#include "poll_command_guard.h"
 #include "ble_presence.h"
 
 namespace MqttHa {
@@ -246,13 +247,7 @@ static void sendDiscovery() {
 
 // M2a: restricted public on-demand command, NOT yet multi-adapter or multi-metric.
 static bool validPollId(const String& id) {
-  if (id.length() < 1 || id.length() > 48) return false;
-  for (size_t i = 0; i < id.length(); ++i) {
-    char c = id[i];
-    if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-          (c >= '0' && c <= '9') || c == '-' || c == '_')) return false;
-  }
-  return true;
+  return PollCommandGuard::validRequestId(id.c_str(), id.length());
 }
 
 static void publishPollAck(const String& id, const String& status) {
@@ -284,8 +279,7 @@ static void onMessage(char* t, byte* payload, unsigned int len) {
     // old commands replayed at reconnect/reboot (PubSubClient does not expose retain).
     time_t now = time(nullptr);
     int64_t issued = d["issued_at"].as<int64_t>();
-    if (now < 1700000000 || issued <= 0 || issued > (int64_t)now + 5 ||
-        issued < (int64_t)now - 20) {
+    if (!PollCommandGuard::freshTimestamp((int64_t)now, issued)) {
       publishPollAck(id, "expired_or_clock_unsynced");
       return;
     }
