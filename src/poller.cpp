@@ -49,6 +49,7 @@ static volatile bool flagPollNow = false;
 static String pendingMqttRequestId;
 static String pendingMqttAdapterId;
 static ObdAdapterConfig pendingMqttAdapter;
+static String activeMqttProfileId;
 static bool mqttVoltageUnavailable = false; // fresh ATRV must succeed before MQTT forced PID reads
 static String pendingConfig;          // unter mtx
 
@@ -269,7 +270,7 @@ static uint32_t msUntilNextDue(uint32_t now) {
 static void publishStateJson() {
   JsonDocument d;
   d["profile"] = profile.name.length() ? profile.name : cfg.profile;
-  d["profile_id"] = cfg.profile;
+  d["profile_id"] = activeMqttProfileId.length() ? activeMqttProfileId : cfg.profile;
   if (timeValid()) {
     time_t tnow = time(nullptr);
     struct tm tmv;
@@ -850,12 +851,15 @@ static bool beginAdapterSession(const ObdAdapterConfig& target, MqttAdapterSessi
   if (!loadProfileInto(target.profileId, selected)) return false;
   applyAdapterProtocol(selected, target.protocol);
   ElmBle::setSessionTarget(target.mac, target.addrType); // disconnect old ELM; do not mutate cfg
-  saved.savedProfile = std::move(profile);
-  profile = std::move(selected);
-  saved.savedStates.swap(states);
-  states.assign(profile.pids.size(), PidState());
-  saved.savedVoltage = lastVoltage;
-  saved.savedError = lastError;
+  {
+    std::lock_guard<std::mutex> lk(mtx);
+    saved.savedProfile = std::move(profile);
+    profile = std::move(selected);
+    saved.savedStates.swap(states);
+    states.assign(profile.pids.size(), PidState());
+    saved.savedVoltage = lastVoltage;
+    saved.savedError = lastError;
+  }
   saved.savedNextConnectTry = nextConnectTry;
   saved.savedLastSleepPoll = lastSleepPoll;
   saved.savedCarAsleep = carAsleep;
@@ -868,6 +872,7 @@ static bool beginAdapterSession(const ObdAdapterConfig& target, MqttAdapterSessi
   currentHeader = "";
   needWarmup = false;
   ObdParse::setBattery(profile.batteryKwh, profile.consumption);
+  activeMqttProfileId = target.profileId;
   MqttHa::setVehicleContext(target.id);
   saved.active = true;
   return true;
@@ -877,10 +882,14 @@ static void endAdapterSession(MqttAdapterSession& saved) {
   if (!saved.active) return;
   ElmBle::clearSessionTarget(); // always disconnect and clear any ELM/CAN state
   MqttHa::setVehicleContext("");
-  profile = std::move(saved.savedProfile);
-  states.swap(saved.savedStates);
-  lastVoltage = saved.savedVoltage;
-  lastError = saved.savedError;
+  {
+    std::lock_guard<std::mutex> lk(mtx);
+    profile = std::move(saved.savedProfile);
+    states.swap(saved.savedStates);
+    lastVoltage = saved.savedVoltage;
+    lastError = saved.savedError;
+  }
+  activeMqttProfileId = "";
   nextConnectTry = saved.savedNextConnectTry;
   lastSleepPoll = saved.savedLastSleepPoll;
   carAsleep = saved.savedCarAsleep;
@@ -1010,8 +1019,8 @@ void loop() {
 
   MqttAdapterSession previous;
   bool targetReady = true;
-  if (alternate && !cfg.pollEnabled) targetReady = beginAdapterSession(target, previous);
-  else if (alternate && cfg.pollEnabled) targetReady = false;
+  if (requested && cfg.pollEnabled) targetReady = false;
+  else if (alternate) targetReady = beginAdapterSession(target, previous);
 
   if (requested && !targetReady) {
     forcePoll = false;
