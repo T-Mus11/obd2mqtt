@@ -11,6 +11,18 @@ struct BlePresenceDevice {
   String name;    // presentation only
 };
 
+// Registered OBD adapters: each owns a vehicle, BLE identity, ECU profile and protocol.
+// Max 4 entries; kept separate from the 8 passive presence tags.
+struct ObdAdapterConfig {
+  String id;                        // stable adapter_id for MQTT commands
+  String vehicleId;                 // HA vehicle identity (not used to infer a car from RSSI)
+  String mac;                       // BLE address, uppercase
+  String profileId;                 // /profiles/<profileId>.json
+  String protocol = "profile";     // profile, auto (=ATSP0), or ELM ATSP code 0..9/A..C
+  String addrType = "auto";        // auto/public/random
+  bool enabled = true;
+};
+
 // ---------- Geräte-Konfiguration (/config.json) ----------
 struct AppConfig {
   // Netzwerk
@@ -36,6 +48,7 @@ struct AppConfig {
   String blePin;                        // BLE-Passkey für Dongles mit Kopplung (z. B. WiCAN Pro: 123456), leer = keiner
   bool blePresenceEnabled = false;        // opt-in; no scanning changes for old installs
   std::vector<BlePresenceDevice> blePresenceDevices;  // max 8 stable-MAC devices
+  std::vector<ObdAdapterConfig> obdAdapters;         // max 4 vehicle-bound adapters
 
   // Abfrage
   String profile = "ioniq5";            // Datei /profiles/<name>.json
@@ -90,6 +103,7 @@ void configToJson(JsonDocument& doc, bool maskSecrets);
 void configFromJson(JsonVariantConst src);   // "********" = Wert unverändert lassen
 
 bool loadProfile(const String& name);
+bool loadProfileInto(const String& name, Profile& out); // validate without changing active profile
 bool parseProfile(JsonVariantConst src, Profile& out, String& err);
 void profileToJson(const Profile& p, JsonDocument& doc);
 bool saveProfileRaw(const String& name, const String& json, String& err);
