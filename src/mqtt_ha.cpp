@@ -21,6 +21,7 @@ static std::vector<String> announced;   // bereits per Discovery angelegte Senso
 static std::vector<String> announcedBle; // persisted to permit cleanup after restart
 static const char* bleDiscoveryCache = "/ble_ha_discovery_ids.json";
 static String lastPollRequestId;  // bounded duplicate guard; stale commands rejected by timestamp
+static String pendingPollAckJson; // publish only AFTER PubSubClient::loop() callback returns
 
 static void loadAnnouncedBle() {
   File f = LittleFS.open(bleDiscoveryCache, "r");
@@ -256,7 +257,8 @@ static void publishPollAck(const String& id, const String& status) {
   d["status"] = status;
   String out;
   serializeJson(d, out);
-  publishText("command/poll_data/ack", out, false);
+  // PubSubClient reuses the inbound packet buffer; do not publish from its callback.
+  pendingPollAckJson = out;
 }
 
 static void onMessage(char* t, byte* payload, unsigned int len) {
@@ -329,6 +331,11 @@ void loop() {
   }
   if (discoveryPending) { discoveryPending = false; sendDiscovery(); }
   mqtt.loop();
+  if (pendingPollAckJson.length() && mqtt.connected()) {
+    String ack = pendingPollAckJson;
+    pendingPollAckJson = "";
+    mqtt.publish(topic("command/poll_data/ack").c_str(), ack.c_str(), false);
+  }
 }
 
 void publishValue(const String& id, double v, int precision) {
