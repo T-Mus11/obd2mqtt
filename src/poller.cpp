@@ -923,6 +923,13 @@ static void endAdapterSession(MqttAdapterSession& saved) {
   saved.active = false;
 }
 
+static bool currentAdapterIgnoresVoltage() {
+  for (const auto& a : cfg.obdAdapters) {
+    if (a.enabled && a.mac == cfg.bleMac && a.voltageMode == "ignore") return true;
+  }
+  return false;
+}
+
 static volatile int pendingEnable = -1;
 void requestEnabled(bool on) { pendingEnable = on ? 1 : 0; }
 
@@ -931,6 +938,13 @@ static void applyEnable() {
   if (pe < 0) return;
   pendingEnable = -1;
   bool on = pe == 1;
+  // Legacy auto-poll would still use ATRV. Do not allow it on the same
+  // unreliable adapter registered in explicit no-ATRV mode.
+  if (on && currentAdapterIgnoresVoltage()) {
+    MqttHa::publishText("polling", "OFF");
+    logf("Auto polling refused: adapter has voltage_mode=ignore; use HA OBD button");
+    return;
+  }
   MqttHa::publishText("polling", on ? "ON" : "OFF");
   if (cfg.pollEnabled == on) return;
   cfg.pollEnabled = on;
@@ -954,6 +968,10 @@ static void applyPendingConfig() {
     std::lock_guard<std::mutex> lk(mtx);
     configFromJson(d.as<JsonVariantConst>());
   }
+  if (cfg.pollEnabled && currentAdapterIgnoresVoltage()) {
+    cfg.pollEnabled = false;
+    logf("Disabled legacy polling for voltage_mode=ignore adapter");
+  }
   saveConfig();
   logSetPersist(cfg.logPersist);
   logf("%s", T("Konfiguration gespeichert", "Configuration saved"));
@@ -972,6 +990,11 @@ static void applyPendingConfig() {
 
 static bool bleOn = true;
 void begin(bool bleEnabled) {
+  if (cfg.pollEnabled && currentAdapterIgnoresVoltage()) {
+    cfg.pollEnabled = false;
+    saveConfig();
+    logf("Boot safeguard: legacy polling disabled for voltage_mode=ignore adapter");
+  }
   bleOn = bleEnabled;
   if (bleOn) ElmBle::begin();
   reloadProfile();
