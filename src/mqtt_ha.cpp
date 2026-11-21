@@ -3,6 +3,7 @@
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
 #include <time.h>
+#include <esp_system.h>
 #include <LittleFS.h>
 #include "config.h"
 #include "log.h"
@@ -24,6 +25,10 @@ static const char* bleDiscoveryCache = "/ble_ha_discovery_ids.json";
 static String lastPollRequestId;  // bounded duplicate guard; stale commands rejected by timestamp
 static String pendingPollAckJson; // publish only AFTER PubSubClient::loop() callback returns
 static String vehicleContext;     // only set while a non-default adapter is polled
+static String buttonSessionNonce; // random per broker connection; no retained PRESS replay on reconnect
+static String pendingButtonAdapterId, pendingButtonOutcome, pendingButtonRequestId;
+static std::vector<String> announcedAdapters;
+static const char* adapterDiscoveryCache = "/obd_ha_discovery_ids.json";
 
 static void loadAnnouncedBle() {
   File f = LittleFS.open(bleDiscoveryCache, "r");
@@ -45,6 +50,32 @@ static void saveAnnouncedBle(const std::vector<String>& next) {
   JsonArray arr = d.to<JsonArray>();
   for (const String& id : next) arr.add(id);
   File f = LittleFS.open(bleDiscoveryCache, "w");
+  if (!f) return;
+  serializeJson(d, f);
+  f.close();
+}
+
+static void loadAnnouncedAdapters() {
+  File f = LittleFS.open(adapterDiscoveryCache, "r");
+  if (!f) return;
+  JsonDocument d;
+  if (!deserializeJson(d, f) && d.is<JsonArray>()) {
+    for (JsonVariantConst x : d.as<JsonArrayConst>()) {
+      if (!x.is<const char*>()) continue;
+      String id = x.as<String>();
+      if (ObdAdapterRegistry::validId(id.c_str()) && announcedAdapters.size() < 4)
+        announcedAdapters.push_back(id);
+    }
+  }
+  f.close();
+}
+
+static void saveAnnouncedAdapters(const std::vector<String>& ids) {
+  if (announcedAdapters == ids) return;
+  JsonDocument d;
+  JsonArray list = d.to<JsonArray>();
+  for (const auto& id : ids) list.add(id);
+  File f = LittleFS.open(adapterDiscoveryCache, "w");
   if (!f) return;
   serializeJson(d, f);
   f.close();
@@ -176,6 +207,45 @@ static void sendDiscovery() {
     publishConfig("switch", "polling", d);
   }
   mqtt.publish(topic("polling").c_str(), cfg.pollEnabled ? "ON" : "OFF", true);
+  // Per-adapter, one-shot controls live on the same bridge device in Home Assistant.
+  // The command topic includes a random token regenerated on every MQTT reconnect:
+  // a retained PRESS from any previous session is never subscribed to again.
+  std::vector<String> activeAdapters;
+  bool adaptersOk = true;
+  for (const auto& a : cfg.obdAdapters) {
+    if (!a.enabled) continue;
+    activeAdapters.push_back(a.id);
+    String press = topic("vehicles/" + a.id + "/poll/press/" + buttonSessionNonce);
+    if (buttonSessionNonce.length()) adaptersOk = mqtt.subscribe(press.c_str(), 1) && adaptersOk;
+    JsonDocument button;
+    button["name"] = "Read OBD " + a.id;
+    button["command_topic"] = press;
+    button["payload_press"] = "PRESS";
+    button["icon"] = "mdi:car-connected";
+    adaptersOk = publishConfig("button", "obd_" + a.id + "_poll", button) && adaptersOk;
+
+    JsonDocument state;
+    state["name"] = "Last OBD read " + a.id;
+    state["state_topic"] = topic("vehicles/" + a.id + "/poll_status");
+    state["json_attributes_topic"] = topic("vehicles/" + a.id + "/poll_result");
+    state["entity_category"] = "diagnostic";
+    state["icon"] = "mdi:car-info";
+    adaptersOk = publishConfig("sensor", "obd_" + a.id + "_poll_status", state) && adaptersOk;
+  }
+  for (const auto& old : announcedAdapters) {
+    bool exists = false;
+    for (const auto& id : activeAdapters) if (old == id) exists = true;
+    if (exists) continue;
+    JsonDocument emptyButton, emptyStatus;
+    adaptersOk = publishConfig("button", "obd_" + old + "_poll", emptyButton) && adaptersOk;
+    adaptersOk = publishConfig("sensor", "obd_" + old + "_poll_status", emptyStatus) && adaptersOk;
+    adaptersOk = mqtt.publish(topic("vehicles/" + old + "/poll_status").c_str(), "", true) && adaptersOk;
+    adaptersOk = mqtt.publish(topic("vehicles/" + old + "/poll_result").c_str(), "", true) && adaptersOk;
+  }
+  if (adaptersOk) {
+    saveAnnouncedAdapters(activeAdapters);
+    announcedAdapters = activeAdapters;
+  } else logf("OBD adapters MQTT Discovery incomplete; will retry after reconnect");
   { // BLE-Signal
     JsonDocument d;
     d["name"] = "BLE Signal";
@@ -269,6 +339,22 @@ static void publishPollAck(const String& id, const String& status) {
 
 static void onMessage(char* t, byte* payload, unsigned int len) {
   const String incomingTopic(t);
+  // Native HA MQTT button: one-shot poll for the registered adapter.
+  // Never rely on HA scripting or on the legacy continuous Polling switch.
+  // A per-connection nonce in the topic prevents old retained PRESS replay.
+  for (const auto& a : cfg.obdAdapters) {
+    if (!a.enabled || buttonSessionNonce.isEmpty()) continue;
+    if (incomingTopic != topic("vehicles/" + a.id + "/poll/press/" + buttonSessionNonce)) continue;
+    if (len != 5 || memcmp(payload, "PRESS", 5) != 0) return;
+    String id = "ui_" + a.id + "_" + String((unsigned long)time(nullptr)) + "_" +
+                String((unsigned long)(millis() % 1000000UL));
+    String outcome = Poller::requestMqttPoll(id, a.id);
+    // Publish only after PubSubClient's message callback exits.
+    pendingButtonAdapterId = a.id;
+    pendingButtonOutcome = outcome;
+    pendingButtonRequestId = id;
+    return;
+  }
   if (incomingTopic == topic("command/poll_data")) {
     if (len == 0 || len > 384) { publishPollAck("", "invalid_size"); return; }
     JsonDocument d;
@@ -312,6 +398,7 @@ static void onMessage(char* t, byte* payload, unsigned int len) {
 
 void begin() {
   loadAnnouncedBle();
+  loadAnnouncedAdapters();
   mqtt.setCallback(onMessage);
   mqtt.setBufferSize(1536);
   mqtt.setKeepAlive(30);
@@ -336,15 +423,44 @@ void loop() {
     mqtt.publish(will.c_str(), "online", true);
     mqtt.subscribe(topic("polling/set").c_str());
     mqtt.subscribe(topic("command/poll_data").c_str(), 1);
+    uint32_t nonce = esp_random();
+    buttonSessionNonce = String((unsigned long)nonce, HEX) + String((unsigned long)millis(), HEX);
     discoveryPending = true;
   }
   if (discoveryPending) { discoveryPending = false; sendDiscovery(); }
   mqtt.loop();
+  if (pendingButtonAdapterId.length() && mqtt.connected()) {
+    String adapter = pendingButtonAdapterId, outcome = pendingButtonOutcome;
+    String id = pendingButtonRequestId;
+    pendingButtonAdapterId = "";
+    pendingButtonOutcome = "";
+    pendingButtonRequestId = "";
+    if (outcome != "accepted") {
+      JsonDocument d;
+      d["request_id"] = id;
+      d["adapter_id"] = adapter;
+      d["status"] = outcome;
+      d["source"] = "mqtt_button";
+      if (time(nullptr) > 0) d["reported_at"] = (int64_t)time(nullptr);
+      String json;
+      serializeJson(d, json);
+      publishAdapterPollResult(adapter, json, outcome);
+    }
+  }
   if (pendingPollAckJson.length() && mqtt.connected()) {
     String ack = pendingPollAckJson;
     pendingPollAckJson = "";
     mqtt.publish(topic("command/poll_data/ack").c_str(), ack.c_str(), false);
   }
+}
+
+void publishAdapterPollResult(const String& adapterId, const String& payload, const String& status) {
+  if (!mqtt.connected() || !ObdAdapterRegistry::validId(adapterId.c_str())) return;
+  // Last completed/rejected attempt, not a live vehicle connection indicator.
+  String state = topic("vehicles/" + adapterId + "/poll_status");
+  String result = topic("vehicles/" + adapterId + "/poll_result");
+  mqtt.publish(result.c_str(), payload.c_str(), true);
+  mqtt.publish(state.c_str(), status.c_str(), true);
 }
 
 void publishValue(const String& id, double v, int precision) {
