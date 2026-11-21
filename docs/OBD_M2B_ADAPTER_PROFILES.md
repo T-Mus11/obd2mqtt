@@ -100,7 +100,7 @@ To jedynie przykład; `issued_at` jest czasem Unix **generowanym na bieżąco**.
 **Rozmiar builda `esp32dev`** (miary z linkera, **nie** bieżące zużycie heap na urządzeniu):
 - RAM statyczny: 60 528 B / 327 680 B (18,5%).
 - Flash aplikacji: 1 594 637 B / 1 966 080 B (81,1%).
-- Plik binarny OCI/OTA w workflow: `obd2mqtt-v0.3.24-m2b-test-esp32dev-ota.bin`; artefakt builda jest przeznaczony tylko do potencjalnego **ręcznego** testu po osobnej zgodzie i weryfikacji sumy SHA-256.
+- Plik binarny OTA w workflow: `obd2mqtt-v0.3.24-m2b-test-esp32dev-ota.bin`; artefakt builda jest przeznaczony tylko do potencjalnego **ręcznego** testu po osobnej zgodzie i weryfikacji sumy SHA-256.
 
 **Niezaliczone testy:** fizyczne przełączanie dwóch adapterów i dwóch profili, rzeczywiste `ATSP6/ATSP7`, serializacja zdarzeń MQTT w obecności HA, utrata BLE i odtwarzanie, heap/WDT przy wielu profilach, poziomy napięcia i przywrócenie rollback OTA. Nie są to testy wykonywane przez CI.
 
