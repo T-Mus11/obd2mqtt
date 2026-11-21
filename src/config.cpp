@@ -10,9 +10,16 @@ Profile profile;
 const char* MASK = "********";
 
 static const char* CONFIG_FILE = "/config.json";
+static bool filesystemMounted = false;
+bool fsMounted() { return filesystemMounted; }
 
 bool fsBegin() {
-  if (!LittleFS.begin(true)) return false;   // formatiert bei Bedarf
+  // Never format LittleFS automatically: this device holds the only live copy
+  // of user settings and vehicle profiles until an explicit restore is made.
+  // On mount failure, leave flash untouched and let main boot into recovery
+  // access-point mode with BLE polling disabled.
+  filesystemMounted = LittleFS.begin(false);
+  if (!filesystemMounted) return false;
   if (!LittleFS.exists("/profiles")) LittleFS.mkdir("/profiles");
   installDefaultProfiles(false);
   return true;
@@ -227,6 +234,12 @@ void configToJson(JsonDocument& d, bool mask) {
   d["ble_write"] = cfg.bleWrite;
   d["ble_name"] = cfg.bleName;
   d["ble_pin"] = cfg.blePin;
+  d["ble_presence_enabled"] = cfg.blePresenceEnabled;
+  JsonArray bleDevices = d["ble_presence_devices"].to<JsonArray>();
+  for (const auto& device : cfg.blePresenceDevices) {
+    JsonObject o = bleDevices.add<JsonObject>();
+    o["id"] = device.id; o["mac"] = device.mac; o["name"] = device.name;
+  }
   d["profile"] = cfg.profile;
   d["poll_enabled"] = cfg.pollEnabled;
   d["min_voltage"] = cfg.minVoltage;
@@ -279,6 +292,33 @@ void configFromJson(JsonVariantConst s) {
   str("ble_name", cfg.bleName);
   str("ble_pin", cfg.blePin);
   { String d; for (char c : cfg.blePin) if (isdigit((unsigned char)c)) d += c; cfg.blePin = d.substring(0, 6); }
+  if (s["ble_presence_enabled"].is<bool>()) cfg.blePresenceEnabled = s["ble_presence_enabled"].as<bool>();
+  if (s["ble_presence_devices"].is<JsonArrayConst>()) {
+    std::vector<BlePresenceDevice> next;
+    for (JsonVariantConst o : s["ble_presence_devices"].as<JsonArrayConst>()) {
+      if (next.size() >= 8) break;  // predictable memory and scan work
+      if (!o["id"].is<const char*>() || !o["mac"].is<const char*>()) continue;
+      BlePresenceDevice d;
+      d.id = o["id"].as<String>(); d.id.trim(); d.id.toLowerCase();
+      d.mac = o["mac"].as<String>(); d.mac.trim(); d.mac.toUpperCase();
+      d.name = o["name"].is<const char*>() ? o["name"].as<String>() : d.id;
+      d.name.trim();
+      if (d.name.isEmpty()) d.name = d.id;
+      if (!validProfileName(d.id) || d.mac.length() != 17) continue;
+      bool validMac = true;
+      for (unsigned i = 0; i < 17; i++) {
+        if (i == 2 || i == 5 || i == 8 || i == 11 || i == 14) {
+          if (d.mac[i] != ':') validMac = false;
+        } else if (!isxdigit((unsigned char)d.mac[i])) validMac = false;
+      }
+      if (!validMac) continue;
+      bool duplicate = false;
+      for (const auto& x : next)
+        if (x.id == d.id || x.mac == d.mac) { duplicate = true; break; }
+      if (!duplicate) next.push_back(d);
+    }
+    cfg.blePresenceDevices.swap(next);
+  }
   str("profile", cfg.profile);
   if (s["poll_enabled"].is<bool>()) cfg.pollEnabled = s["poll_enabled"];
   if (s["min_voltage"].is<float>()) cfg.minVoltage = s["min_voltage"];

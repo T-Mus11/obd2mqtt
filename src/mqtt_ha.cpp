@@ -2,10 +2,12 @@
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
+#include <LittleFS.h>
 #include "config.h"
 #include "log.h"
 #include "i18n.h"
 #include "poller.h"
+#include "ble_presence.h"
 
 namespace MqttHa {
 
@@ -14,6 +16,33 @@ static PubSubClient mqtt(net);
 static uint32_t lastTry = 0;
 static bool discoveryPending = true;
 static std::vector<String> announced;   // bereits per Discovery angelegte Sensor-IDs
+static std::vector<String> announcedBle; // persisted to permit cleanup after restart
+static const char* bleDiscoveryCache = "/ble_ha_discovery_ids.json";
+
+static void loadAnnouncedBle() {
+  File f = LittleFS.open(bleDiscoveryCache, "r");
+  if (!f) return;
+  JsonDocument d;
+  if (!deserializeJson(d, f) && d.is<JsonArray>()) {
+    for (JsonVariantConst id : d.as<JsonArrayConst>()) {
+      if (!id.is<const char*>()) continue;
+      String value = id.as<String>();
+      if (validProfileName(value) && announcedBle.size() < 8) announcedBle.push_back(value);
+    }
+  }
+  f.close();
+}
+
+static void saveAnnouncedBle(const std::vector<String>& next) {
+  if (announcedBle == next) return; // avoid repeated flash writes on reconnect
+  JsonDocument d;
+  JsonArray arr = d.to<JsonArray>();
+  for (const String& id : next) arr.add(id);
+  File f = LittleFS.open(bleDiscoveryCache, "w");
+  if (!f) return;
+  serializeJson(d, f);
+  f.close();
+}
 
 String deviceId() {
   uint8_t m[6];
@@ -37,7 +66,7 @@ static void addDevice(JsonDocument& d) {
   av.add<JsonObject>()["topic"] = topic("status");
 }
 
-static void publishConfig(const String& component, const String& objId, JsonDocument& d) {
+static bool publishConfig(const String& component, const String& objId, JsonDocument& d) {
   String t = cfg.haPrefix + "/" + component + "/" + deviceId() + "/" + objId + "/config";
   String payload;
   if (!d.isNull()) {
@@ -45,7 +74,7 @@ static void publishConfig(const String& component, const String& objId, JsonDocu
     addDevice(d);
     serializeJson(d, payload);
   }
-  mqtt.publish(t.c_str(), payload.c_str(), true);   // leerer Payload = Entität entfernen
+  return mqtt.publish(t.c_str(), payload.c_str(), true);   // leerer Payload = Entität entfernen
 }
 
 // <base>/profile = Anzeigename, <base>/profile/attributes = Details (JSON)
@@ -167,6 +196,47 @@ static void sendDiscovery() {
     d["icon"] = "mdi:car-info";
     publishConfig("sensor", "profile", d);
   }
+  // BLE Presence: tri-state sensor avoids mistaking UNKNOWN for NOT_IN_RANGE.
+  // One bridge device, independent entities per configured observed BLE device.
+  std::vector<String> currentBle;
+  bool bleDiscoveryOk = true;
+  if (cfg.blePresenceEnabled) {
+    for (const auto& b : cfg.blePresenceDevices) {
+      currentBle.push_back(b.id);
+      JsonDocument state;
+      state["name"] = b.name + " BLE presence";
+      state["state_topic"] = topic("ble/" + b.id + "/state");
+      state["icon"] = "mdi:bluetooth";
+      bleDiscoveryOk = publishConfig("sensor", "ble_" + b.id + "_state", state) && bleDiscoveryOk;
+      JsonDocument rssi;
+      rssi["name"] = b.name + " BLE RSSI";
+      rssi["state_topic"] = topic("ble/" + b.id + "/rssi");
+      rssi["unit_of_measurement"] = "dBm";
+      rssi["device_class"] = "signal_strength";
+      rssi["entity_category"] = "diagnostic";
+      bleDiscoveryOk = publishConfig("sensor", "ble_" + b.id + "_rssi", rssi) && bleDiscoveryOk;
+    }
+  }
+  for (const auto& old : announcedBle) {
+    bool found = false;
+    for (const auto& id : currentBle) if (id == old) { found = true; break; }
+    if (!found) {
+      JsonDocument empty1, empty2;
+      bleDiscoveryOk = publishConfig("sensor", "ble_" + old + "_state", empty1) && bleDiscoveryOk;
+      bleDiscoveryOk = publishConfig("sensor", "ble_" + old + "_rssi", empty2) && bleDiscoveryOk;
+      // Retained data from removed IDs must not be mistaken for live observations.
+      bleDiscoveryOk = mqtt.publish(topic("ble/" + old + "/state").c_str(), "", true) && bleDiscoveryOk;
+      bleDiscoveryOk = mqtt.publish(topic("ble/" + old + "/rssi").c_str(), "", true) && bleDiscoveryOk;
+      bleDiscoveryOk = mqtt.publish(topic("ble/" + old + "/last_seen_epoch").c_str(), "", true) && bleDiscoveryOk;
+    }
+  }
+  if (bleDiscoveryOk) {
+    saveAnnouncedBle(currentBle);
+    announcedBle = currentBle;
+  } else {
+    logf("BLE discovery: MQTT publication failed, retained IDs left for retry after reconnect");
+  }
+  BlePresence::publishAll();
   { JsonDocument empty; publishConfig("update", "firmware", empty); }   // Update-Entität aus 0.3.23 wieder entfernen
   publishProfile();
   logf(T("MQTT Discovery gesendet (%u PIDs aktiv)", "MQTT discovery sent (%u PIDs active)"), (unsigned)now.size());
@@ -184,6 +254,7 @@ static void onMessage(char* t, byte* payload, unsigned int len) {
 }
 
 void begin() {
+  loadAnnouncedBle();
   mqtt.setCallback(onMessage);
   mqtt.setBufferSize(1536);
   mqtt.setKeepAlive(30);

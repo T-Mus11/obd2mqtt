@@ -4,6 +4,13 @@
 #include <vector>
 
 
+// ESP32 keeps only a small registry; HA handles history and scheduling.
+struct BlePresenceDevice {
+  String id;      // stable MQTT-safe id (lowercase letters/digits/_/-)
+  String mac;     // stable BLE address, uppercase
+  String name;    // presentation only
+};
+
 // ---------- Geräte-Konfiguration (/config.json) ----------
 struct AppConfig {
   // Netzwerk
@@ -27,6 +34,8 @@ struct AppConfig {
   String bleService, bleNotify, bleWrite; // leer = automatisch erkennen
   String bleName;                       // Anzeigename (aus Scan bzw. Dongle)
   String blePin;                        // BLE-Passkey für Dongles mit Kopplung (z. B. WiCAN Pro: 123456), leer = keiner
+  bool blePresenceEnabled = false;        // opt-in; no scanning changes for old installs
+  std::vector<BlePresenceDevice> blePresenceDevices;  // max 8 stable-MAC devices
 
   // Abfrage
   String profile = "ioniq5";            // Datei /profiles/<name>.json
@@ -73,6 +82,7 @@ extern bool g_ipFallback;          // feste IP fehlgeschlagen → DHCP aktiv (ma
 extern Profile profile;
 
 bool fsBegin();
+bool fsMounted();  // true only when existing LittleFS successfully mounted; never auto-formats
 bool loadConfig();
 bool saveConfig();
 void migrateProfiles();              // gespeicherte Profile reparieren (z. B. fehlendes ATFCSD)
