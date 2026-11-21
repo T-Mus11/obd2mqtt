@@ -354,7 +354,7 @@ void configFromJson(JsonVariantConst s) {
       a.addrType = o["addr_type"].is<const char*>() ? o["addr_type"].as<String>() : String("auto");
       a.addrType.trim(); a.addrType.toLowerCase();
       a.enabled = o["enabled"].is<bool>() ? o["enabled"].as<bool>() : true;
-      if (!ObdAdapterRegistry::validId(a.id.c_str()) ||
+      if (!ObdAdapterRegistry::validId(a.id.c_str()) || a.id == "current" ||
           !ObdAdapterRegistry::validId(a.vehicleId.c_str()) ||
           !ObdAdapterRegistry::validMac(a.mac.c_str()) ||
           !validProfileName(a.profileId) ||
