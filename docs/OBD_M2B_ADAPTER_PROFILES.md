@@ -83,3 +83,25 @@ To jedynie przykład; `issued_at` jest czasem Unix **generowanym na bieżąco**.
 - Test retencji MQTT, zużycia RAM i WDT na ESP32-WROOM-32D; po QA dołączenie encji HA dla nowego adaptera.
 
 **Zapis testów GitHub Actions:** podawać konkretne run ID oraz statusy po zakończeniu. PR Draft nie jest zgodą na OTA.
+
+## Wyniki kompilacji i testów — 21.11.2026
+
+**Zweryfikowany commit kodu:** `b832450571b358d98fec2a9661c3f834bf054956`.
+**GitHub Actions:** [run 44876442251](https://github.com/T-Mus11/obd2mqtt/actions/runs/44876442251) — **completed / success** (wszystkie zadania).
+
+| Zadanie CI | Wynik |
+|---|---|
+| PlatformIO `esp32dev` (ESP32-WROOM-32D, docelowy sprzęt testowy) | PASS |
+| PlatformIO `esp32s3` | PASS |
+| PlatformIO `esp32c3` | PASS |
+| Testy natywne C++11: BLE Presence, MQTT request ID/TTL, formaty adapterów/protokołów | PASS |
+| Budowa obrazu rollback v0.3.24 z kodu bazowego | PASS |
+
+**Rozmiar builda `esp32dev`** (miary z linkera, **nie** bieżące zużycie heap na urządzeniu):
+- RAM statyczny: 60 528 B / 327 680 B (18,5%).
+- Flash aplikacji: 1 594 637 B / 1 966 080 B (81,1%).
+- Plik binarny OCI/OTA w workflow: `obd2mqtt-v0.3.24-m2b-test-esp32dev-ota.bin`; artefakt builda jest przeznaczony tylko do potencjalnego **ręcznego** testu po osobnej zgodzie i weryfikacji sumy SHA-256.
+
+**Niezaliczone testy:** fizyczne przełączanie dwóch adapterów i dwóch profili, rzeczywiste `ATSP6/ATSP7`, serializacja zdarzeń MQTT w obecności HA, utrata BLE i odtwarzanie, heap/WDT przy wielu profilach, poziomy napięcia i przywrócenie rollback OTA. Nie są to testy wykonywane przez CI.
+
+**Ryzyka otwarte:** znany retained-replay z M2a, brak pełnego MQTT Discovery dla dodatkowych aut, brak per-adapter PIN/UUID, brak kolejki wielosesyjnej i automatycznego triggera Vgate. Dostępne zlecenie MQTT nie powinno być uruchamiane na rzeczywistym ECU przy poprzednio zaobserwowanym `ATRV=11.8V` bez ponownego pomiaru i potwierdzenia bezpiecznego zasilania.
