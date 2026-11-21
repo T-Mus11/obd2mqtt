@@ -29,6 +29,7 @@ static String vehicleContext;     // only set while a non-default adapter is pol
 static String buttonSessionNonce; // random per broker connection; no retained PRESS replay on reconnect
 static String pendingButtonAdapterId, pendingButtonOutcome, pendingButtonRequestId;
 static std::vector<String> announcedAdapters;
+static std::vector<String> subscribedButtonIds; // avoid duplicate subscriptions within one connection
 static const char* adapterDiscoveryCache = "/obd_ha_discovery_ids.json";
 
 static void loadAnnouncedBle() {
@@ -163,15 +164,21 @@ static void sendDiscovery() {
   }
   announced = now;
 
-  { // 12V-Bordnetz (vom Dongle gemessen)
+  { // Hide invalid legacy battery-voltage telemetry for the same no-ATRV dongle.
+    bool suppress = false;
+    if (!cfg.pollEnabled) for (const auto& a : cfg.obdAdapters)
+      if (a.enabled && a.mac == cfg.bleMac && a.voltageMode == "ignore") suppress = true;
     JsonDocument d;
-    d["name"] = T("12V Bordnetz", "12V battery");
-    d["state_topic"] = topic("voltage_12v");
-    d["unit_of_measurement"] = "V";
-    d["device_class"] = "voltage";
-    d["state_class"] = "measurement";
-    d["suggested_display_precision"] = 1;
+    if (!suppress) {
+      d["name"] = T("12V Bordnetz", "12V battery");
+      d["state_topic"] = topic("voltage_12v");
+      d["unit_of_measurement"] = "V";
+      d["device_class"] = "voltage";
+      d["state_class"] = "measurement";
+      d["suggested_display_precision"] = 1;
+    }
     publishConfig("sensor", "voltage_12v", d);
+    if (suppress) mqtt.publish(topic("voltage_12v").c_str(), "", true); // purge stale retained reading
   }
   { // Dongle erreichbar
     JsonDocument d;
@@ -217,7 +224,13 @@ static void sendDiscovery() {
     if (!a.enabled) continue;
     activeAdapters.push_back(a.id);
     String press = topic("vehicles/" + a.id + "/poll/press/" + buttonSessionNonce);
-    if (buttonSessionNonce.length()) adaptersOk = mqtt.subscribe(press.c_str(), 1) && adaptersOk;
+    bool subscribed = false;
+    for (const auto& id : subscribedButtonIds) if (id == a.id) subscribed = true;
+    if (!subscribed && buttonSessionNonce.length()) {
+      bool ok = mqtt.subscribe(press.c_str(), 1);
+      adaptersOk = ok && adaptersOk;
+      if (ok) subscribedButtonIds.push_back(a.id);
+    }
     JsonDocument button;
     button["name"] = "Read OBD " + a.id;
     button["command_topic"] = press;
@@ -426,6 +439,7 @@ void loop() {
     mqtt.subscribe(topic("command/poll_data").c_str(), 1);
     uint32_t nonce = esp_random();
     buttonSessionNonce = String((unsigned long)nonce, HEX) + String((unsigned long)millis(), HEX);
+    subscribedButtonIds.clear();
     discoveryPending = true;
   }
   if (discoveryPending) { discoveryPending = false; sendDiscovery(); }
