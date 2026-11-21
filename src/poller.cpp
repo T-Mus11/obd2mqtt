@@ -141,6 +141,15 @@ static bool ensureReady(String& err) {
       if (!ok) logf(T("Init '%s' ohne Prompt (Antwort: %s)", "Init '%s' without prompt (response: %s)"), c.c_str(), oneLine(r).c_str());
       else if (rejected(r)) logf(T("Init '%s' vom Dongle abgelehnt (Antwort: %s)", "Init '%s' rejected by the dongle (response: %s)"), c.c_str(), oneLine(r).c_str());
       else if (dbg) logf("[diag] %s → %s", c.c_str(), oneLine(r, 60).c_str());
+      // An explicit per-adapter ATSP setting is mandatory: never silently
+      // continue on a previous/auto-selected protocol if ELM rejected it.
+      if (activeMqttProfileId.length() && pendingMqttAdapter.protocol != "profile") {
+        String cmd = c; cmd.trim(); cmd.toUpperCase();
+        if (cmd.startsWith("ATSP") && (!ok || rejected(r) || r.indexOf("OK") < 0)) {
+          err = "ELM rejected configured protocol " + pendingMqttAdapter.protocol;
+          return false;
+        }
+      }
       if (c.startsWith("ATZ")) delay(300);
     }
     currentHeader = "";
