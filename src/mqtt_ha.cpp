@@ -2,6 +2,7 @@
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
+#include <time.h>
 #include <LittleFS.h>
 #include "config.h"
 #include "log.h"
@@ -18,6 +19,7 @@ static bool discoveryPending = true;
 static std::vector<String> announced;   // bereits per Discovery angelegte Sensor-IDs
 static std::vector<String> announcedBle; // persisted to permit cleanup after restart
 static const char* bleDiscoveryCache = "/ble_ha_discovery_ids.json";
+static String lastPollRequestId;  // bounded duplicate guard; stale commands rejected by timestamp
 
 static void loadAnnouncedBle() {
   File f = LittleFS.open(bleDiscoveryCache, "r");
@@ -242,7 +244,57 @@ static void sendDiscovery() {
   logf(T("MQTT Discovery gesendet (%u PIDs aktiv)", "MQTT discovery sent (%u PIDs active)"), (unsigned)now.size());
 }
 
+// M2a: restricted public on-demand command, NOT yet multi-adapter or multi-metric.
+static bool validPollId(const String& id) {
+  if (id.length() < 1 || id.length() > 48) return false;
+  for (size_t i = 0; i < id.length(); ++i) {
+    char c = id[i];
+    if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+          (c >= '0' && c <= '9') || c == '-' || c == '_')) return false;
+  }
+  return true;
+}
+
+static void publishPollAck(const String& id, const String& status) {
+  JsonDocument d;
+  if (validPollId(id)) d["request_id"] = id;
+  d["status"] = status;
+  String out;
+  serializeJson(d, out);
+  publishText("command/poll_data/ack", out, false);
+}
+
 static void onMessage(char* t, byte* payload, unsigned int len) {
+  const String incomingTopic(t);
+  if (incomingTopic == topic("command/poll_data")) {
+    if (len == 0 || len > 384) { publishPollAck("", "invalid_size"); return; }
+    JsonDocument d;
+    if (deserializeJson(d, payload, len) || !d.is<JsonObject>()) {
+      publishPollAck("", "invalid_json");
+      return;
+    }
+    const String id = d["request_id"] | "";
+    if (!validPollId(id)) { publishPollAck("", "invalid_request_id"); return; }
+    // Explicit intent, one configured adapter and the currently active profile only.
+    const String adapter = d["adapter_id"] | "";
+    const String metrics = d["metrics"] | "";
+    if (adapter != "current" || metrics != "full" || !d["force"].is<bool>() ||
+        !d["force"].as<bool>()) { publishPollAck(id, "unsupported_scope"); return; }
+    // Non-retained commands are required; an absolute time-to-live also rejects
+    // old commands replayed at reconnect/reboot (PubSubClient does not expose retain).
+    time_t now = time(nullptr);
+    int64_t issued = d["issued_at"].as<int64_t>();
+    if (now < 1700000000 || issued <= 0 || issued > (int64_t)now + 5 ||
+        issued < (int64_t)now - 20) {
+      publishPollAck(id, "expired_or_clock_unsynced");
+      return;
+    }
+    if (lastPollRequestId == id) { publishPollAck(id, "duplicate"); return; }
+    if (!Poller::requestMqttPoll(id)) { publishPollAck(id, "busy_or_unsafe"); return; }
+    lastPollRequestId = id;
+    publishPollAck(id, "accepted");
+    return;
+  }
   String tp(t), v;
   for (unsigned i = 0; i < len && i < 16; i++) v += (char)payload[i];
   v.trim();
@@ -278,6 +330,7 @@ void loop() {
     logf(T("MQTT verbunden mit %s:%u", "MQTT connected to %s:%u"), cfg.mqttHost.c_str(), cfg.mqttPort);
     mqtt.publish(will.c_str(), "online", true);
     mqtt.subscribe(topic("polling/set").c_str());
+    mqtt.subscribe(topic("command/poll_data").c_str(), 1);
     discoveryPending = true;
   }
   if (discoveryPending) { discoveryPending = false; sendDiscovery(); }
