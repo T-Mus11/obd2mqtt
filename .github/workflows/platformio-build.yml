@@ -44,6 +44,7 @@ jobs:
               assert marker in source, marker
           PY
           node --check /tmp/obd2mqtt-web-ui.js
+          node test/native/obd_adapter_ui_test.js
       - name: Verify non-destructive boot and stable HA Discovery identity
         run: |
           ! grep -R 'LittleFS.begin(true)' src
