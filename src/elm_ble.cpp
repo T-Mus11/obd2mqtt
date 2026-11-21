@@ -13,6 +13,8 @@ volatile bool quiet = false;
 
 static bool sessionTargetActive = false;
 static String sessionMac, sessionAddrType;
+static bool savedRelaxed = false, savedPairLogged = false;
+static uint8_t savedFastDrops = 0;
 static const String emptyPin;
 static const String& activeMac() { return sessionTargetActive ? sessionMac : cfg.bleMac; }
 static const String& activeAddressType() { return sessionTargetActive ? sessionAddrType : cfg.bleAddrType; }
@@ -135,6 +137,12 @@ void disconnect() {
 void setSessionTarget(const String& mac, const String& addrType) {
   stopPresenceScan();
   disconnect();
+  savedRelaxed = relaxed;
+  savedFastDrops = fastDrops;
+  savedPairLogged = pairLogged;
+  relaxed = false;
+  fastDrops = 0;
+  pairLogged = false;
   sessionMac = mac;
   sessionAddrType = addrType;
   sessionTargetActive = true;
@@ -145,6 +153,9 @@ void clearSessionTarget() {
   sessionTargetActive = false;
   sessionMac = "";
   sessionAddrType = "";
+  relaxed = savedRelaxed;
+  fastDrops = savedFastDrops;
+  pairLogged = savedPairLogged;
 }
 
 static bool isStdService(const NimBLEUUID& u) {
