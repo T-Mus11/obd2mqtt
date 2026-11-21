@@ -988,68 +988,126 @@ void loop() {
     return;
   }
 
-  uint32_t now = millis();
+  String requestId, adapterId;
+  ObdAdapterConfig target;
+  {
+    std::lock_guard<std::mutex> lk(mtx);
+    requestId = pendingMqttRequestId;
+    adapterId = pendingMqttAdapterId;
+    target = pendingMqttAdapter;
+  }
+  const bool requested = requestId.length() > 0;
+  const bool alternate = requested && adapterId != "current";
   if (flagPollNow) {
     flagPollNow = false;
-    std::lock_guard<std::mutex> lk(mtx);
-    for (auto& s : states) s.lastPoll = 0;
+    // Explicit alternate-vehicle polls must not erase the legacy profile's PID state.
+    if (!alternate) {
+      std::lock_guard<std::mutex> lk(mtx);
+      for (auto& state : states) state.lastPoll = 0;
+    }
     nextConnectTry = 0;
   }
-  if (cfg.bleMac.isEmpty()) { updateCache(); return; }
 
-  uint32_t wait = msUntilNextDue(now);
-  if (wait == 0) {
-    if ((int32_t)(now - nextConnectTry) >= 0) {
-      String requestId;
+  MqttAdapterSession previous;
+  bool targetReady = true;
+  if (alternate && !cfg.pollEnabled) targetReady = beginAdapterSession(target, previous);
+  else if (alternate && cfg.pollEnabled) targetReady = false;
+
+  if (requested && !targetReady) {
+    forcePoll = false;
+    {
+      std::lock_guard<std::mutex> lk(mtx);
+      pendingMqttRequestId = "";
+      pendingMqttAdapterId = "";
+    }
+    JsonDocument d;
+    d["request_id"] = requestId;
+    d["adapter_id"] = adapterId;
+    d["status"] = cfg.pollEnabled ? "cancelled_legacy_enabled" : "invalid_profile";
+    String json;
+    serializeJson(d, json);
+    MqttHa::publishText("command/poll_data/result", json, false);
+    updateCache();
+    return;
+  }
+
+  // The default device is left entirely untouched by the alternate-target path.
+  if (!alternate && cfg.bleMac.isEmpty()) {
+    if (requested) {
+      forcePoll = false;
+      std::lock_guard<std::mutex> lk(mtx);
+      pendingMqttRequestId = "";
+      pendingMqttAdapterId = "";
+    }
+    updateCache();
+    return;
+  }
+
+  uint32_t now = millis();
+  if (msUntilNextDue(now) == 0 && (int32_t)(now - nextConnectTry) >= 0) {
+    const uint32_t startedMs = millis();
+    if (requested) {
+      mqttVoltageUnavailable = false;
+      std::lock_guard<std::mutex> lk(mtx);
+      lastVoltage = NAN;  // a previous reading can never satisfy a new manual request
+    }
+    pollDue();  // fresh ATRV guard, then one complete pass through enabled profile PIDs
+    if (requested) forcePoll = false;  // also disarm when pollDue returns early
+
+    if (requested) {
+      const uint32_t elapsed = millis() - startedMs;
+      size_t enabled = 0, fresh = 0;
+      const float volts = lastVoltage;
+      const String err = lastError;
+      JsonDocument d;
+      d["request_id"] = requestId;
+      d["adapter_id"] = adapterId;
+      d["metrics"] = "full";
+      d["profile_id"] = alternate ? target.profileId : cfg.profile;
+      if (alternate) {
+        d["vehicle_id"] = target.vehicleId;
+        d["protocol"] = target.protocol;
+      }
+      d["duration_ms"] = elapsed;
+      JsonObject values = d["values"].to<JsonObject>();
+      for (size_t i = 0; i < profile.pids.size() && i < states.size(); i++) {
+        if (!profile.pids[i].enabled) continue;
+        ++enabled;
+        if (states[i].lastOk && (uint32_t)(states[i].lastOk - startedMs) <= elapsed) {
+          ++fresh;
+          values[profile.pids[i].id] = states[i].value;
+        }
+      }
+      d["pids_enabled"] = enabled;
+      d["pids_fresh"] = fresh;
+      if (!isnan(volts)) d["voltage_12v"] = volts;
+      if (err.length()) d["last_error"] = err.substring(0, 120);
+      d["status"] = mqttVoltageUnavailable ? "blocked_voltage_unknown"
+                    : ((!isnan(volts) && cfg.minVoltage > 0 && volts < cfg.minVoltage)
+                       ? "blocked_low_voltage"
+                       : (enabled > 0 && fresh == enabled ? "success"
+                          : (fresh > 0 ? "partial" : "no_ecu_response")));
+      String payload;
+      serializeJson(d, payload);
+      // PubSubClient uses a 1536 B packet buffer; per-PID retained topics still
+      // contain data when the optional inline snapshot is too large.
+      if (payload.length() > 1200) {
+        d.remove("values");
+        d["values_omitted"] = true;
+        payload = "";
+        serializeJson(d, payload);
+      }
+      endAdapterSession(previous);
       {
         std::lock_guard<std::mutex> lk(mtx);
-        requestId = pendingMqttRequestId;
+        pendingMqttRequestId = "";
+        pendingMqttAdapterId = "";
       }
-      uint32_t startedMs = millis();
-      if (requestId.length()) {
-        mqttVoltageUnavailable = false;
-        std::lock_guard<std::mutex> lk(mtx);
-        lastVoltage = NAN; // never classify a prior retained measurement as fresh voltage
-      }
-      pollDue();  // existing one-shot cycle: includes fresh ATRV low-voltage check
-      if (requestId.length()) forcePoll = false; // no deferred waking after an early return
-      if (requestId.length()) {
-        const uint32_t elapsed = millis() - startedMs;
-        size_t enabled = 0, fresh = 0;
-        float volts;
-        String err;
-        {
-          std::lock_guard<std::mutex> lk(mtx);
-          for (size_t i = 0; i < profile.pids.size() && i < states.size(); i++) {
-            if (!profile.pids[i].enabled) continue;
-            ++enabled;
-            // Unsigned arithmetic is rollover-safe for this bounded single cycle.
-            if (states[i].lastOk && (uint32_t)(states[i].lastOk - startedMs) <= elapsed) ++fresh;
-          }
-          volts = lastVoltage;
-          err = lastError;
-          pendingMqttRequestId = "";
-        }
-        JsonDocument d;
-        d["request_id"] = requestId;
-        d["adapter_id"] = "current"; // M2a targets only the currently configured OBD adapter
-        d["metrics"] = "full";
-        d["duration_ms"] = elapsed;
-        d["pids_enabled"] = enabled;
-        d["pids_fresh"] = fresh;
-        if (!isnan(volts)) d["voltage_12v"] = volts;
-        if (err.length()) d["last_error"] = err.substring(0, 120);
-        d["status"] = mqttVoltageUnavailable ? "blocked_voltage_unknown"
-                        : ((!isnan(volts) && cfg.minVoltage > 0 && volts < cfg.minVoltage)
-                           ? "blocked_low_voltage"
-                           : (enabled > 0 && fresh == enabled ? "success"
-                              : (fresh > 0 ? "partial" : "no_ecu_response")));
-        String payload;
-        serializeJson(d, payload);
-        MqttHa::publishText("command/poll_data/result", payload, false);
-      }
+      MqttHa::publishText("command/poll_data/result", payload, false);
     }
   }
+  // Never leave an alternate profile or MAC in effect even after an early skip.
+  if (previous.active) endAdapterSession(previous);
   if (ElmBle::connected() && !cfg.keepConnected && msUntilNextDue(millis()) > 20000) {
     bool jobBusy;
     {
