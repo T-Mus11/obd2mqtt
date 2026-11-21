@@ -4,6 +4,7 @@
 #include "poller.h"
 #include <WiFi.h>
 #include <vector>
+#include <utility>
 #include "config.h"
 #include "elm_ble.h"
 #include "log.h"
@@ -46,6 +47,8 @@ static volatile bool flagProfileReload = false;
 static volatile bool flagPollNow = false;
 // M2a: at most one explicit MQTT request for the currently configured adapter.
 static String pendingMqttRequestId;
+static String pendingMqttAdapterId;
+static ObdAdapterConfig pendingMqttAdapter;
 static bool mqttVoltageUnavailable = false; // fresh ATRV must succeed before MQTT forced PID reads
 static String pendingConfig;          // unter mtx
 
@@ -781,19 +784,36 @@ String lastErrorText() {
 
 void requestPollNow() { flagPollNow = true; forcePoll = true; }
 
-bool requestMqttPoll(const String& requestId) {
-  if (isPaused()) return false;
+String requestMqttPoll(const String& requestId, const String& adapterId) {
+  if (isPaused()) return "busy_or_unsafe";
   std::lock_guard<std::mutex> lk(mtx);
-  // Never silently enable legacy auto-poll or bypass the configured 12 V safety guard.
-  if (cfg.pollEnabled || cfg.bleMac.isEmpty() || cfg.minVoltage < 12.0f ||
-      pendingMqttRequestId.length() || job.state == "pending" || job.state == "running") return false;
+  if (cfg.pollEnabled || cfg.minVoltage < 12.0f || pendingMqttRequestId.length() ||
+      job.state == "pending" || job.state == "running") return "busy_or_unsafe";
+
+  ObdAdapterConfig target;
+  if (adapterId == "current") {
+    if (cfg.bleMac.isEmpty()) return "unknown_adapter";
+  } else {
+    bool found = false;
+    for (const auto& a : cfg.obdAdapters) {
+      if (a.id == adapterId && a.enabled) { target = a; found = true; break; }
+    }
+    if (!found) return "unknown_adapter";
+  }
+
+  Profile selected;
+  if (adapterId == "current") selected = profile;
+  else if (!loadProfileInto(target.profileId, selected)) return "invalid_profile";
   bool hasEnabledPid = false;
-  for (const auto& p : profile.pids) if (p.enabled) { hasEnabledPid = true; break; }
-  if (!hasEnabledPid) return false;
+  for (const auto& p : selected.pids) if (p.enabled) { hasEnabledPid = true; break; }
+  if (!hasEnabledPid) return "empty_profile";
+
   pendingMqttRequestId = requestId;
+  pendingMqttAdapterId = adapterId;
+  pendingMqttAdapter = target;
   flagPollNow = true;
-  forcePoll = true;  // Intentional user command may wake ECU; voltage guard in pollDue() still applies.
-  return true;
+  forcePoll = true; // Intentional manual command, but fresh ATRV and voltage guard still apply.
+  return "accepted";
 }
 
 static volatile int pendingEnable = -1;
