@@ -16,10 +16,11 @@ void loop();
 void requestConfigApply(const String& json);  // übernimmt + speichert Konfiguration
 void requestProfileReload();                  // aktives Profil neu laden
 void requestPollNow();
-// M2a: one explicitly requested cycle of the currently configured profile.
+// M2b: one explicitly requested cycle of an adapter-bound profile.
 // Returns false if radio/profile/voltage guard is unavailable or another job is in progress.
-// A full multi-adapter/metrics scheduler is intentionally NOT implemented here.
-bool requestMqttPoll(const String& requestId);
+// Selection is serial (one radio); retries/MVP metric selection remain future work.
+// Returns "accepted", "unknown_adapter", "invalid_profile", "busy_or_unsafe" etc.
+String requestMqttPoll(const String& requestId, const String& adapterId);
 String lastErrorText();                       // aktueller „Letzter Fehler“ (leer = keiner)
 void requestEnabled(bool on);                 // Hauptschalter (Web/MQTT) – wird im loop() gespeichert
 void setPaused(bool p);                       // z.B. während OTA
