@@ -288,7 +288,7 @@ function obdRowData(node) {
  const get = k => node.querySelector('[data-obd="'+k+'"]');
  return {id:get('id').value.trim().toLowerCase(),vehicle_id:get('vehicle_id').value.trim().toLowerCase(),
   mac:get('mac').value.trim().toUpperCase(),profile_id:get('profile_id').value,
-  protocol:get('protocol').value,addr_type:get('addr_type').value,enabled:get('enabled').checked};
+  protocol:get('protocol').value,addr_type:get('addr_type').value,voltage_mode:get('voltage_mode').value,enabled:get('enabled').checked};
 }
 function obdCollect() {
  return [...document.querySelectorAll('#obdrows .obditem')].map(obdRowData);
@@ -315,6 +315,8 @@ function obdRender() {
     '<div><label>'+t('ELM-Protokoll')+'</label><select data-obd="protocol" onchange="obdDirty()">'+proto+'</select></div>'+
     '<div><label>'+t('Adress-Typ')+'</label><select data-obd="addr_type" onchange="obdDirty()">'+
        ['auto','public','random'].map(p=>obdOption(p,p,a.addr_type)).join('')+'</select></div>'+
+    '<div><label>Voltage / ATRV</label><select data-obd="voltage_mode" onchange="obdDirty()">'+
+       ['guard','ignore'].map(p=>obdOption(p,p==='guard'?'Guard (ATRV)': 'Ignore (no ATRV)',a.voltage_mode||'guard')).join('')+'</select></div>'+
     '<div><label>'+t('Aktiviert')+'</label><input type="checkbox" data-obd="enabled" '+(a.enabled?'checked':'')+' onchange="obdDirty()"></div></div></div>';
  }).join('');
  if(!obdRows.length)root.innerHTML='<p class="hint">'+t('Keine Adapter konfiguriert')+'</p>';
@@ -339,7 +341,7 @@ function obdAdd() {
  obdRows=obdCollect();
  if(obdRows.length>=4)return toast('Maximum: 4 OBD adapters');
  if(!obdProfiles.length)return toast(t('Kein Profil vorhanden'));
- obdRows.push({id:'',vehicle_id:'',mac:'',profile_id:obdProfiles[0],protocol:'profile',addr_type:'auto',enabled:true});
+ obdRows.push({id:'',vehicle_id:'',mac:'',profile_id:obdProfiles[0],protocol:'profile',addr_type:'auto',voltage_mode:'guard',enabled:true});
  obdRender();obdDirty();
 }
 function obdRemove(i) {
@@ -374,14 +376,15 @@ function obdValidate(rows) {
   if(!idPattern.test(a.id)||a.id==='current'||!idPattern.test(a.vehicle_id))return 'Invalid adapter or vehicle ID';
   if(!macPattern.test(a.mac))return 'Invalid BLE MAC: '+a.id;
   if(!obdProfiles.includes(a.profile_id))return 'Unknown profile: '+a.profile_id;
+  if(!['guard','ignore'].includes(a.voltage_mode))return 'Invalid voltage mode';
   if(ids.has(a.id)||vehicles.has(a.vehicle_id)||macs.has(a.mac))return 'Duplicate adapter, vehicle or BLE address';
   ids.add(a.id);vehicles.add(a.vehicle_id);macs.add(a.mac);
  }
  return '';
 }
 function obdEqual(a,b) {
- return JSON.stringify(a.map(v=>[v.id,v.vehicle_id,v.mac,v.profile_id,v.protocol,v.addr_type,v.enabled]))===
-  JSON.stringify(b.map(v=>[v.id,v.vehicle_id,v.mac,v.profile_id,v.protocol,v.addr_type,v.enabled]));
+ return JSON.stringify(a.map(v=>[v.id,v.vehicle_id,v.mac,v.profile_id,v.protocol,v.addr_type,v.voltage_mode||'guard',v.enabled]))===
+  JSON.stringify(b.map(v=>[v.id,v.vehicle_id,v.mac,v.profile_id,v.protocol,v.addr_type,v.voltage_mode||'guard',v.enabled]));
 }
 async function obdSave() {
  if(!obdCapable||obdBusy)return;

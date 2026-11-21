@@ -251,6 +251,7 @@ void configToJson(JsonDocument& d, bool mask) {
     o["profile_id"] = adapter.profileId;
     o["protocol"] = adapter.protocol;
     o["addr_type"] = adapter.addrType;
+    o["voltage_mode"] = adapter.voltageMode;
     o["enabled"] = adapter.enabled;
   }
   d["profile"] = cfg.profile;
@@ -353,13 +354,16 @@ void configFromJson(JsonVariantConst s) {
       else a.protocol.toLowerCase();
       a.addrType = o["addr_type"].is<const char*>() ? o["addr_type"].as<String>() : String("auto");
       a.addrType.trim(); a.addrType.toLowerCase();
+      a.voltageMode = o["voltage_mode"].is<const char*>() ? o["voltage_mode"].as<String>() : String("guard");
+      a.voltageMode.trim(); a.voltageMode.toLowerCase();
       a.enabled = o["enabled"].is<bool>() ? o["enabled"].as<bool>() : true;
       if (!ObdAdapterRegistry::validId(a.id.c_str()) || a.id == "current" ||
           !ObdAdapterRegistry::validId(a.vehicleId.c_str()) ||
           !ObdAdapterRegistry::validMac(a.mac.c_str()) ||
           !validProfileName(a.profileId) ||
           !ObdAdapterRegistry::validProtocol(a.protocol.c_str()) ||
-          !ObdAdapterRegistry::validAddressType(a.addrType.c_str())) { valid = false; break; }
+          !ObdAdapterRegistry::validAddressType(a.addrType.c_str()) ||
+          (a.voltageMode != "guard" && a.voltageMode != "ignore")) { valid = false; break; }
       for (const auto& p : next)
         if (p.id == a.id || p.vehicleId == a.vehicleId || p.mac == a.mac) { valid = false; break; }
       if (valid) next.push_back(a);

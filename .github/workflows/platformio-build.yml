@@ -45,6 +45,28 @@ jobs:
           PY
           node --check /tmp/obd2mqtt-web-ui.js
           node test/native/obd_adapter_ui_test.js
+      - name: Enforce no-ATRV opt-in and native HA button contracts
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          config = Path("src/config.cpp").read_text()
+          poller = Path("src/poller.cpp").read_text()
+          mqtt = Path("src/mqtt_ha.cpp").read_text()
+          assert 'o["voltage_mode"] = adapter.voltageMode;' in config
+          assert 'a.voltageMode != "guard" && a.voltageMode != "ignore"' in config
+          assert 'const bool ignoreVoltage' in poller
+          assert 'ignoreVoltage ? NAN : readVoltage()' in poller
+          assert 'target.voltageMode != "ignore"' in poller
+          assert 'publishAdapterPollResult(adapterId, payload' in poller
+          assert 'publishConfig("button", "obd_" + a.id + "_poll"' in mqtt
+          assert 'publishConfig("sensor", "obd_" + a.id + "_poll_status"' in mqtt
+          assert 'buttonSessionNonce = String((unsigned long)nonce, HEX)' in mqtt
+          assert 'esp_random()' in mqtt
+          assert 'memcmp(payload, "PRESS", 5)' in mqtt
+          assert 'pendingButtonOutcome' in mqtt
+          assert 'mqtt.publish(result.c_str(), payload.c_str(), true);' in mqtt
+          print("PASS: No-ATRV opt-in, native MQTT Discovery button/status, nonce and deferred callback")
+          PY
       - name: Verify non-destructive boot and stable HA Discovery identity
         run: |
           ! grep -R 'LittleFS.begin(true)' src
@@ -117,20 +139,20 @@ jobs:
         run: python -m pip install 'platformio>=6,<7'
       - name: Build firmware (no upload)
         run: pio run -e ${{ matrix.environment }}
-      - name: SHA256 and source manifest (M2c draft test image)
+      - name: SHA256 and source manifest (M2d draft test image)
         if: matrix.environment == 'esp32dev'
         run: |
-          test -s firmware/obd2mqtt-v0.3.24-m2c-test-esp32dev-ota.bin
-          sha256sum firmware/obd2mqtt-v0.3.24-m2c-test-esp32dev-ota.bin > firmware/SHA256SUMS-m2c.txt
-          printf '%s\n' "Source: T-Mus11/obd2mqtt@${{ github.event.pull_request.head.sha || github.sha }}" "Board: esp32dev / ESP32-WROOM-32D" "Firmware version: 0.3.24-m2c-test" "OTA application only; not a factory or full flash image" "Manual test: no automatic upload, no merge" > firmware/M2C-SOURCE.txt
+          test -s firmware/obd2mqtt-v0.3.24-m2d-test-esp32dev-ota.bin
+          sha256sum firmware/obd2mqtt-v0.3.24-m2d-test-esp32dev-ota.bin > firmware/SHA256SUMS-m2d.txt
+          printf '%s\n' "Source: T-Mus11/obd2mqtt@${{ github.event.pull_request.head.sha || github.sha }}" "Board: esp32dev / ESP32-WROOM-32D" "Firmware version: 0.3.24-m2d-test" "OTA application only; not a factory or full flash image" "Manual test: no automatic upload, no merge" > firmware/M2D-SOURCE.txt
       - name: Archive ESP32-WROOM OTA image (manual test only)
         if: matrix.environment == 'esp32dev'
         uses: actions/upload-artifact@v4
         with:
-          name: obd2mqtt-m2c-esp32dev-ota-${{ github.event.pull_request.head.sha || github.sha }}
+          name: obd2mqtt-m2d-esp32dev-ota-${{ github.event.pull_request.head.sha || github.sha }}
           path: |
-            firmware/obd2mqtt-v0.3.24-m2c-test-esp32dev-ota.bin
-            firmware/SHA256SUMS-m2c.txt
-            firmware/M2C-SOURCE.txt
+            firmware/obd2mqtt-v0.3.24-m2d-test-esp32dev-ota.bin
+            firmware/SHA256SUMS-m2d.txt
+            firmware/M2D-SOURCE.txt
           if-no-files-found: error
           retention-days: 30

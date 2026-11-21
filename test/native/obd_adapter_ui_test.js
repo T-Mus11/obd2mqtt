@@ -17,11 +17,11 @@ vm.runInContext('function t(v){return v;}\n' + block +
 ctx.__profiles(['ioniq5','fiat_tipo']);
 const nissan = {
  id:'nissan',vehicle_id:'nissan_qashqai',mac:'D2:E0:2F:8D:52:48',
- profile_id:'ioniq5',protocol:'profile',addr_type:'auto',enabled:true
+ profile_id:'ioniq5',protocol:'profile',addr_type:'auto',voltage_mode:'guard',enabled:true
 };
 const fiat = {
  id:'fiat',vehicle_id:'fiat_tipo',mac:'A1:B2:C3:D4:E5:F6',
- profile_id:'fiat_tipo',protocol:'6',addr_type:'auto',enabled:true
+ profile_id:'fiat_tipo',protocol:'6',addr_type:'auto',voltage_mode:'guard',enabled:true
 };
 assert.equal(ctx.__validate([nissan]),'');
 assert.equal(ctx.__validate([nissan,fiat]),'');
@@ -38,4 +38,7 @@ assert.ok(ctx.__validate(Array.from({length:5},(_,i)=>({
 assert.equal(ctx.__equal([nissan,fiat],[{...nissan},{...fiat}]),true);
 assert.equal(ctx.__equal([nissan],[{...nissan,enabled:false}]),false);
 assert.equal(ctx.__equal([nissan],[{...nissan,protocol:'7'}]),false);
+assert.ok(ctx.__validate([{...nissan,voltage_mode:'unsupported'}]));
+assert.equal(ctx.__validate([{...nissan,voltage_mode:'ignore'}]),'');
+assert.equal(ctx.__equal([{...nissan,voltage_mode:'ignore'}],[{...nissan,voltage_mode:'guard'}]),false);
 console.log('OBD adapter Web UI validation: PASS');

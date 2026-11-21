@@ -20,6 +20,7 @@ struct ObdAdapterConfig {
   String profileId;                 // /profiles/<profileId>.json
   String protocol = "profile";     // profile, auto (=ATSP0), or ELM ATSP code 0..9/A..C
   String addrType = "auto";        // auto/public/random
+  String voltageMode = "guard";     // guard = ATRV protection; ignore = no voltage measurement for this adapter
   bool enabled = true;
 };
 
