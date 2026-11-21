@@ -9,6 +9,7 @@
 #include "i18n.h"
 #include "poller.h"
 #include "poll_command_guard.h"
+#include "obd_adapter_registry.h"
 #include "ble_presence.h"
 
 namespace MqttHa {
@@ -277,10 +278,12 @@ static void onMessage(char* t, byte* payload, unsigned int len) {
     }
     const String id = d["request_id"] | "";
     if (!validPollId(id)) { publishPollAck("", "invalid_request_id"); return; }
-    // Explicit intent, one configured adapter and the currently active profile only.
+    // Explicit intent. M2b resolves adapter_id to a saved BLE + ECU profile mapping.
+    // Only full-profile, one-shot queries are supported; no user-supplied AT commands.
     const String adapter = d["adapter_id"] | "";
     const String metrics = d["metrics"] | "";
-    if (adapter != "current" || metrics != "full" || !d["force"].is<bool>() ||
+    if ((adapter != "current" && !ObdAdapterRegistry::validId(adapter.c_str())) ||
+        metrics != "full" || !d["force"].is<bool>() ||
         !d["force"].as<bool>()) { publishPollAck(id, "unsupported_scope"); return; }
     // Non-retained commands are required; an absolute time-to-live also rejects
     // old commands replayed at reconnect/reboot (PubSubClient does not expose retain).
@@ -291,7 +294,8 @@ static void onMessage(char* t, byte* payload, unsigned int len) {
       return;
     }
     if (lastPollRequestId == id) { publishPollAck(id, "duplicate"); return; }
-    if (!Poller::requestMqttPoll(id)) { publishPollAck(id, "busy_or_unsafe"); return; }
+    const String outcome = Poller::requestMqttPoll(id, adapter);
+    if (outcome != "accepted") { publishPollAck(id, outcome); return; }
     lastPollRequestId = id;
     publishPollAck(id, "accepted");
     return;
