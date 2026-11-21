@@ -44,6 +44,8 @@ static int cacheRssi = 0;
 // Flags aus dem Web-Task
 static volatile bool flagProfileReload = false;
 static volatile bool flagPollNow = false;
+// M2a: at most one explicit MQTT request for the currently configured adapter.
+static String pendingMqttRequestId;
 static String pendingConfig;          // unter mtx
 
 // Job
@@ -769,6 +771,18 @@ String lastErrorText() {
 
 void requestPollNow() { flagPollNow = true; forcePoll = true; }
 
+bool requestMqttPoll(const String& requestId) {
+  if (isPaused()) return false;
+  std::lock_guard<std::mutex> lk(mtx);
+  // Never silently enable legacy auto-poll or bypass the configured 12 V safety guard.
+  if (cfg.pollEnabled || cfg.bleMac.isEmpty() || cfg.minVoltage <= 0 ||
+      pendingMqttRequestId.length() || job.state == "pending" || job.state == "running") return false;
+  pendingMqttRequestId = requestId;
+  flagPollNow = true;
+  forcePoll = true;  // Intentional user command may wake ECU; voltage guard in pollDue() still applies.
+  return true;
+}
+
 static volatile int pendingEnable = -1;
 void requestEnabled(bool on) { pendingEnable = on ? 1 : 0; }
 
@@ -876,7 +890,49 @@ void loop() {
 
   uint32_t wait = msUntilNextDue(now);
   if (wait == 0) {
-    if ((int32_t)(now - nextConnectTry) >= 0) pollDue();
+    if ((int32_t)(now - nextConnectTry) >= 0) {
+      String requestId;
+      {
+        std::lock_guard<std::mutex> lk(mtx);
+        requestId = pendingMqttRequestId;
+      }
+      uint32_t startedMs = millis();
+      pollDue();  // existing one-shot cycle: includes fresh ATRV low-voltage check
+      if (requestId.length()) {
+        const uint32_t elapsed = millis() - startedMs;
+        size_t enabled = 0, fresh = 0;
+        float volts;
+        String err;
+        {
+          std::lock_guard<std::mutex> lk(mtx);
+          for (size_t i = 0; i < profile.pids.size() && i < states.size(); i++) {
+            if (!profile.pids[i].enabled) continue;
+            ++enabled;
+            // Unsigned arithmetic is rollover-safe for this bounded single cycle.
+            if (states[i].lastOk && (uint32_t)(states[i].lastOk - startedMs) <= elapsed) ++fresh;
+          }
+          volts = lastVoltage;
+          err = lastError;
+          pendingMqttRequestId = "";
+        }
+        JsonDocument d;
+        d["request_id"] = requestId;
+        d["adapter_id"] = "current"; // M2a targets only the currently configured OBD adapter
+        d["metrics"] = "full";
+        d["duration_ms"] = elapsed;
+        d["pids_enabled"] = enabled;
+        d["pids_fresh"] = fresh;
+        if (!isnan(volts)) d["voltage_12v"] = volts;
+        if (err.length()) d["last_error"] = err.substring(0, 120);
+        d["status"] = (!isnan(volts) && cfg.minVoltage > 0 && volts < cfg.minVoltage)
+                        ? "blocked_low_voltage"
+                        : (enabled > 0 && fresh == enabled ? "success"
+                           : (fresh > 0 ? "partial" : "no_ecu_response"));
+        String payload;
+        serializeJson(d, payload);
+        MqttHa::publishText("command/poll_data/result", payload, false);
+      }
+    }
   }
   if (ElmBle::connected() && !cfg.keepConnected && msUntilNextDue(millis()) > 20000) {
     bool jobBusy;
