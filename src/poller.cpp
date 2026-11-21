@@ -775,7 +775,7 @@ bool requestMqttPoll(const String& requestId) {
   if (isPaused()) return false;
   std::lock_guard<std::mutex> lk(mtx);
   // Never silently enable legacy auto-poll or bypass the configured 12 V safety guard.
-  if (cfg.pollEnabled || cfg.bleMac.isEmpty() || cfg.minVoltage <= 0 ||
+  if (cfg.pollEnabled || cfg.bleMac.isEmpty() || cfg.minVoltage < 12.0f ||
       pendingMqttRequestId.length() || job.state == "pending" || job.state == "running") return false;
   pendingMqttRequestId = requestId;
   flagPollNow = true;
