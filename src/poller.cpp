@@ -816,6 +816,82 @@ String requestMqttPoll(const String& requestId, const String& adapterId) {
   return "accepted";
 }
 
+// A registry adapter temporarily uses its own profile/ELM protocol and BLE target.
+// Move the legacy vectors rather than copying them: ESP32 heap is limited.
+struct MqttAdapterSession {
+  Profile savedProfile;
+  std::vector<PidState> savedStates;
+  float savedVoltage = NAN;
+  String savedError;
+  uint32_t savedNextConnectTry = 0;
+  uint32_t savedLastSleepPoll = 0;
+  bool savedCarAsleep = false;
+  bool active = false;
+};
+
+static void applyAdapterProtocol(Profile& selected, const String& protocol) {
+  if (protocol == "profile") return;  // keep profile-specific initialization unchanged
+  const String desired = protocol == "auto" ? "ATSP0" : "ATSP" + protocol;
+  bool replaced = false;
+  for (auto& c : selected.init) {
+    String normalized = c;
+    normalized.trim();
+    normalized.toUpperCase();
+    if (normalized.startsWith("ATSP")) {
+      c = desired;
+      replaced = true;
+    }
+  }
+  if (!replaced) selected.init.push_back(desired);
+}
+
+static bool beginAdapterSession(const ObdAdapterConfig& target, MqttAdapterSession& saved) {
+  Profile selected;
+  if (!loadProfileInto(target.profileId, selected)) return false;
+  applyAdapterProtocol(selected, target.protocol);
+  ElmBle::setSessionTarget(target.mac, target.addrType); // disconnect old ELM; do not mutate cfg
+  saved.savedProfile = std::move(profile);
+  profile = std::move(selected);
+  saved.savedStates.swap(states);
+  states.assign(profile.pids.size(), PidState());
+  saved.savedVoltage = lastVoltage;
+  saved.savedError = lastError;
+  saved.savedNextConnectTry = nextConnectTry;
+  saved.savedLastSleepPoll = lastSleepPoll;
+  saved.savedCarAsleep = carAsleep;
+  lastVoltage = NAN;
+  lastError = "";
+  nextConnectTry = 0;
+  lastSleepPoll = 0;
+  carAsleep = false;
+  elmReady = false;
+  currentHeader = "";
+  needWarmup = false;
+  ObdParse::setBattery(profile.batteryKwh, profile.consumption);
+  MqttHa::setVehicleContext(target.id);
+  saved.active = true;
+  return true;
+}
+
+static void endAdapterSession(MqttAdapterSession& saved) {
+  if (!saved.active) return;
+  ElmBle::clearSessionTarget(); // always disconnect and clear any ELM/CAN state
+  MqttHa::setVehicleContext("");
+  profile = std::move(saved.savedProfile);
+  states.swap(saved.savedStates);
+  lastVoltage = saved.savedVoltage;
+  lastError = saved.savedError;
+  nextConnectTry = saved.savedNextConnectTry;
+  lastSleepPoll = saved.savedLastSleepPoll;
+  carAsleep = saved.savedCarAsleep;
+  elmReady = false;
+  currentHeader = "";
+  needWarmup = false;
+  ObdParse::setBattery(profile.batteryKwh, profile.consumption);
+  syncValues();
+  saved.active = false;
+}
+
 static volatile int pendingEnable = -1;
 void requestEnabled(bool on) { pendingEnable = on ? 1 : 0; }
 
