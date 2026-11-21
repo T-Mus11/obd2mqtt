@@ -41,3 +41,13 @@ Konfiguracja *adapter BLE → samochód → profil PID → protokół ELM* znajd
 - `docs/OBD_M2C_ADAPTER_UI.md` — niniejsza dokumentacja.
 
 Brak zmian produkcyjnych, brak skopiowanych sekretów i brak aktualizacji firmware na urządzeniu.
+
+## Wynik CI — 21.11.2026
+
+- **Kod:** commit `0c16f1960205be2c6a358fab8062f784e28749ba`.
+- [GitHub Actions run 44890018499](https://github.com/T-Mus11/obd2mqtt/actions/runs/44890018499): **completed / success** — `esp32dev`, `esp32s3`, `esp32c3`, testy natywne BLE/Poll/Registry/Web UI oraz build rollback.
+- Test Web UI: wyodrębnienie JS z `src/web_ui.h`, `node --check`, `test/native/obd_adapter_ui_test.js` — PASS (walidacja ID/MAC/profili/duplikatów oraz porównanie zapisu).
+- `esp32dev`: statyczny RAM 60 528 / 327 680 B (18,5%); flash 1 603 981 / 1 966 080 B (81,6%). To **nie** pomiar runtime heap.
+- Ręczny pakiet OTA (nie factory): [obd2mqtt-m2c-esp32dev-ota](https://github.com/T-Mus11/obd2mqtt/actions/runs/44890018499/artifacts/14701224603). Zawiera obraz `obd2mqtt-v0.3.24-m2c-test-esp32dev-ota.bin`, sumę kontrolną i manifest źródła.
+
+**Nieprzeprowadzone:** fizyczny test widoku ESP32 w Chrome, zapis i reboot, skan BLE, odbiór MQTT i odczyt ECU. PR pozostaje Draft; nie wykonywano OTA ani aktualizacji produkcji.
