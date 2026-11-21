@@ -1,6 +1,6 @@
 # M2a — manualne jednokrotne `poll_data` z Home Assistant (Draft)
 
-**Zakres:** niewielki, bezpieczny krok po M1 BLE Presence. To **nie** jest implementacja pełnego M2/M3 z backlogu: bez kolejki wielu adapterów, automatycznego triggera Vgate, autonomicznych retry przez 600 s, DTC Mode 03/07 ani wybierania dowolnego zakresu PID. Wersja firmware pozostaje `0.3.24-m1-test`, ponieważ niczego jeszcze nie wydano ani nie wgrano na ESP32; w razie przyszłego OTA wymagane jest osobne oznaczenie builda, backup i regresja.
+**Zakres:** niewielki, bezpieczny krok po M1 BLE Presence. To **nie** jest implementacja pełnego M2/M3 z backlogu: bez kolejki wielu adapterów, automatycznego triggera Vgate, autonomicznych retry przez 600 s, DTC Mode 03/07 ani wybierania dowolnego zakresu PID. Gałąź przygotowuje osobno oznaczony, **niewdrożony** build `0.3.24-m2a-test`; produkcyjny ESP32 pozostaje na `0.3.24-m1-test`. Przed ewentualnym OTA wymagane są backup, weryfikacja artefaktów, testy i odrębna zgoda.
 
 **Baza kodu:** PR #2 `feat/ble-presence-m1`. Publiczne polecenie używa istniejącej ścieżki Poller `Poll now` i odpytuje **raz** wszystkie aktywne PID-y **bieżącego skonfigurowanego profilu**. Ten kod jest przeznaczony wyłącznie do przeglądu i kompilacji; bez automatycznego wdrożenia.
 
@@ -61,7 +61,7 @@ Wynik: `<mqtt_base>/command/poll_data/result` (non-retained) zawiera `request_id
 
 ## Testy / bramki
 
-1. CI: zbudować `esp32dev / esp32s3 / esp32c3` i zachować dotychczasowy test stanów BLE. **Do potwierdzenia z GitHub Actions po utworzeniu PR.**
+1. CI: zbudować `esp32dev / esp32s3 / esp32c3` i zachować dotychczasowy test stanów BLE. **Do zweryfikowania z GitHub Actions dla aktualnego commitu PR #3.**
 2. Niepoprawny JSON, za długi payload, stary timestamp, błędna lista metryk, nieznany adapter, brak `force`, duplikat ID — odmowa bez wywołania Pollera.
 3. `poll_enabled=false` i brak polecenia — identyczne zachowanie jak M1. `poll_enabled=true` — nowe API odrzuca, nie przełącza samoczynnie trybu.
 4. Battery guard 11.8 V i brak zapłonu: brak odczytu ECU przy bezpiecznym progu; test wyłącznie po potwierdzeniu napięcia. Sprawdzić stan `blocked_low_voltage` i czy nie zmieniają się stare wartości PID.
