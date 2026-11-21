@@ -327,8 +327,11 @@ static void pollDue() {
     logf("%s", T("Dongle wieder erreichbar", "Dongle reachable again"));
   }
 
-  // 12V-Schutz
-  float v = readVoltage();
+  // For a registered unreliable dongle, do not request ATRV at all. Never
+  // infer battery health, ignition, sleep, or safe/unsafe from its voltage.
+  const bool ignoreVoltage = activeMqttProfileId.length() &&
+                             pendingMqttAdapter.voltageMode == "ignore";
+  float v = ignoreVoltage ? NAN : readVoltage();
   {
     std::lock_guard<std::mutex> lk(mtx);
     lastVoltage = v;
@@ -336,14 +339,14 @@ static void pollDue() {
   if (!isnan(v)) MqttHa::publishValue("voltage_12v", v, 1);
   // A deliberately forced MQTT read requires a fresh known battery voltage.
   // Legacy Web Poll now remains unchanged.
-  if (pendingMqttRequestId.length() && isnan(v)) {
+  if (pendingMqttRequestId.length() && !ignoreVoltage && isnan(v)) {
     mqttVoltageUnavailable = true;
     setError("MQTT poll blocked: fresh ATRV battery voltage unavailable");
     if (!cfg.keepConnected) { ElmBle::disconnect(); elmReady = false; }
     nextConnectTry = millis() + 60000UL;
     return;
   }
-  if (cfg.minVoltage > 0 && !isnan(v) && v < cfg.minVoltage) {
+  if (!ignoreVoltage && cfg.minVoltage > 0 && !isnan(v) && v < cfg.minVoltage) {
     setError(String(T("12V zu niedrig (", "12V too low (")) + String(v, 1) + T(" V) – Abfrage pausiert", " V) – polling paused"));
     std::lock_guard<std::mutex> lk(mtx);
     for (size_t i = 0; i < states.size(); i++) if (isDue(i, now)) states[i].lastPoll = now;
@@ -358,13 +361,13 @@ static void pollDue() {
   bool force = forcePoll;
   forcePoll = false;
   // Spannung nicht lesbar: letzten Zustand beibehalten (lieber nicht abfragen, als das Auto zu wecken)
-  if (cfg.sleepVoltage > 0 && isnan(v) && carAsleep && !force) {
+  if (!ignoreVoltage && cfg.sleepVoltage > 0 && isnan(v) && carAsleep && !force) {
     if (!cfg.keepConnected) { ElmBle::disconnect(); elmReady = false; }
     nextConnectTry = now + 60000UL;
     return;
   }
   // 12V-Warnung (mit 0,2 V Hysterese), unabhängig vom Schlafmodus
-  if (cfg.lowBattVoltage > 0 && !isnan(v)) {
+  if (!ignoreVoltage && cfg.lowBattVoltage > 0 && !isnan(v)) {
     static int lowState = -1;
     int ls = lowState;
     if (v < cfg.lowBattVoltage) ls = 1;
@@ -376,7 +379,7 @@ static void pollDue() {
       if (ls) logf(T("WARNUNG: 12-V-Batterie niedrig (%.1f V < %.1f V)", "WARNING: 12 V battery low (%.1f V < %.1f V)"), v, cfg.lowBattVoltage);
     }
   }
-  if (cfg.sleepVoltage > 0 && !isnan(v)) {
+  if (!ignoreVoltage && cfg.sleepVoltage > 0 && !isnan(v)) {
     // Hysterese wie WiCAN: schlafen unter der Schwelle, wach erst ab Schwelle + 0,1 V
     bool asleep = carAsleep ? (v < cfg.sleepVoltage + 0.1f) : (v < cfg.sleepVoltage);
     if (asleep != carAsleep) {
@@ -797,7 +800,7 @@ void requestPollNow() { flagPollNow = true; forcePoll = true; }
 String requestMqttPoll(const String& requestId, const String& adapterId) {
   if (isPaused()) return "busy_or_unsafe";
   std::lock_guard<std::mutex> lk(mtx);
-  if (cfg.pollEnabled || cfg.minVoltage < 12.0f || pendingMqttRequestId.length() ||
+  if (cfg.pollEnabled || pendingMqttRequestId.length() ||
       job.state == "pending" || job.state == "running") return "busy_or_unsafe";
 
   ObdAdapterConfig target;
@@ -810,6 +813,11 @@ String requestMqttPoll(const String& requestId, const String& adapterId) {
     }
     if (!found) return "unknown_adapter";
   }
+
+  // ATRV cannot be trusted for adapters explicitly configured as "ignore".
+  // Default/current legacy mode retains the voltage guard and requires >=12 V.
+  if ((adapterId == "current" || target.voltageMode != "ignore") && cfg.minVoltage < 12.0f)
+    return "busy_or_unsafe";
 
   Profile selected;
   if (adapterId == "current") selected = profile;
@@ -1050,6 +1058,7 @@ void loop() {
     String json;
     serializeJson(d, json);
     MqttHa::publishText("command/poll_data/result", json, false);
+    if (alternate) MqttHa::publishAdapterPollResult(adapterId, json, d["status"].as<String>());
     updateCache();
     return;
   }
@@ -1074,7 +1083,7 @@ void loop() {
       std::lock_guard<std::mutex> lk(mtx);
       lastVoltage = NAN;  // a previous reading can never satisfy a new manual request
     }
-    pollDue();  // fresh ATRV guard, then one complete pass through enabled profile PIDs
+    pollDue();  // per-adapter voltage policy; then one pass through enabled profile PIDs
     if (requested) forcePoll = false;  // also disarm when pollDue returns early
 
     if (requested) {
@@ -1090,6 +1099,7 @@ void loop() {
       if (alternate) {
         d["vehicle_id"] = target.vehicleId;
         d["protocol"] = target.protocol;
+        d["voltage_mode"] = target.voltageMode;
       }
       d["duration_ms"] = elapsed;
       JsonObject values = d["values"].to<JsonObject>();
@@ -1127,6 +1137,7 @@ void loop() {
         pendingMqttAdapterId = "";
       }
       MqttHa::publishText("command/poll_data/result", payload, false);
+      if (alternate) MqttHa::publishAdapterPollResult(adapterId, payload, d["status"].as<String>());
     }
   }
   // Never leave an alternate profile or MAC in effect even after an early skip.
