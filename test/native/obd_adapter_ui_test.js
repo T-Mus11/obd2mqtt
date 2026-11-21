@@ -38,4 +38,7 @@ assert.ok(ctx.__validate(Array.from({length:5},(_,i)=>({
 assert.equal(ctx.__equal([nissan,fiat],[{...nissan},{...fiat}]),true);
 assert.equal(ctx.__equal([nissan],[{...nissan,enabled:false}]),false);
 assert.equal(ctx.__equal([nissan],[{...nissan,protocol:'7'}]),false);
+assert.ok(ctx.__validate([{...nissan,voltage_mode:'unsupported'}]));
+assert.equal(ctx.__validate([{...nissan,voltage_mode:'ignore'}]),'');
+assert.equal(ctx.__equal([{...nissan,voltage_mode:'ignore'}],[{...nissan,voltage_mode:'guard'}]),false);
 console.log('OBD adapter Web UI validation: PASS');
