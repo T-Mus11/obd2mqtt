@@ -881,6 +881,7 @@ static bool beginAdapterSession(const ObdAdapterConfig& target, MqttAdapterSessi
 static void endAdapterSession(MqttAdapterSession& saved) {
   if (!saved.active) return;
   ElmBle::clearSessionTarget(); // always disconnect and clear any ELM/CAN state
+  MqttHa::publishText("car", "offline");  // scoped retained connectivity must not remain ON
   MqttHa::setVehicleContext("");
   {
     std::lock_guard<std::mutex> lk(mtx);
