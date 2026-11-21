@@ -46,6 +46,7 @@ static volatile bool flagProfileReload = false;
 static volatile bool flagPollNow = false;
 // M2a: at most one explicit MQTT request for the currently configured adapter.
 static String pendingMqttRequestId;
+static bool mqttVoltageUnavailable = false; // fresh ATRV must succeed before MQTT forced PID reads
 static String pendingConfig;          // unter mtx
 
 // Job
@@ -320,6 +321,15 @@ static void pollDue() {
     lastVoltage = v;
   }
   if (!isnan(v)) MqttHa::publishValue("voltage_12v", v, 1);
+  // A deliberately forced MQTT read requires a fresh known battery voltage.
+  // Legacy Web Poll now remains unchanged.
+  if (pendingMqttRequestId.length() && isnan(v)) {
+    mqttVoltageUnavailable = true;
+    setError("MQTT poll blocked: fresh ATRV battery voltage unavailable");
+    if (!cfg.keepConnected) { ElmBle::disconnect(); elmReady = false; }
+    nextConnectTry = millis() + 60000UL;
+    return;
+  }
   if (cfg.minVoltage > 0 && !isnan(v) && v < cfg.minVoltage) {
     setError(String(T("12V zu niedrig (", "12V too low (")) + String(v, 1) + T(" V) – Abfrage pausiert", " V) – polling paused"));
     std::lock_guard<std::mutex> lk(mtx);
@@ -777,6 +787,9 @@ bool requestMqttPoll(const String& requestId) {
   // Never silently enable legacy auto-poll or bypass the configured 12 V safety guard.
   if (cfg.pollEnabled || cfg.bleMac.isEmpty() || cfg.minVoltage < 12.0f ||
       pendingMqttRequestId.length() || job.state == "pending" || job.state == "running") return false;
+  bool hasEnabledPid = false;
+  for (const auto& p : profile.pids) if (p.enabled) { hasEnabledPid = true; break; }
+  if (!hasEnabledPid) return false;
   pendingMqttRequestId = requestId;
   flagPollNow = true;
   forcePoll = true;  // Intentional user command may wake ECU; voltage guard in pollDue() still applies.
@@ -897,7 +910,13 @@ void loop() {
         requestId = pendingMqttRequestId;
       }
       uint32_t startedMs = millis();
+      if (requestId.length()) {
+        mqttVoltageUnavailable = false;
+        std::lock_guard<std::mutex> lk(mtx);
+        lastVoltage = NAN; // never classify a prior retained measurement as fresh voltage
+      }
       pollDue();  // existing one-shot cycle: includes fresh ATRV low-voltage check
+      if (requestId.length()) forcePoll = false; // no deferred waking after an early return
       if (requestId.length()) {
         const uint32_t elapsed = millis() - startedMs;
         size_t enabled = 0, fresh = 0;
@@ -924,10 +943,11 @@ void loop() {
         d["pids_fresh"] = fresh;
         if (!isnan(volts)) d["voltage_12v"] = volts;
         if (err.length()) d["last_error"] = err.substring(0, 120);
-        d["status"] = (!isnan(volts) && cfg.minVoltage > 0 && volts < cfg.minVoltage)
-                        ? "blocked_low_voltage"
-                        : (enabled > 0 && fresh == enabled ? "success"
-                           : (fresh > 0 ? "partial" : "no_ecu_response"));
+        d["status"] = mqttVoltageUnavailable ? "blocked_voltage_unknown"
+                        : ((!isnan(volts) && cfg.minVoltage > 0 && volts < cfg.minVoltage)
+                           ? "blocked_low_voltage"
+                           : (enabled > 0 && fresh == enabled ? "success"
+                              : (fresh > 0 ? "partial" : "no_ecu_response")));
         String payload;
         serializeJson(d, payload);
         MqttHa::publishText("command/poll_data/result", payload, false);
